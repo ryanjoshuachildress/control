@@ -4,8 +4,8 @@ services:
     container_name: control
     restart: unless-stopped
     ports:
-      # Bound to localhost only — your reverse proxy on the same host fronts it.
-      - "127.0.0.1:3070:3000"
+      # 0.0.0.0 so the reverse proxy on a separate host can reach it over the LAN.
+      - "0.0.0.0:3070:3000"
     environment:
       - PORT=3000
       # Generate one: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
