@@ -43,7 +43,7 @@ function requireSub(req, res, next) {
 }
 
 function assertDomOwnsSub(db, domId, subId) {
-  const sub = db.prepare('SELECT id, name, title, timezone, email FROM users WHERE id = ? AND dom_id = ? AND role = ?')
+  const sub = db.prepare('SELECT id, name, title, timezone, email, weekly_punish_title, weekly_punish_pct FROM users WHERE id = ? AND dom_id = ? AND role = ?')
     .get(subId, domId, 'sub');
   if (!sub) {
     const err = new Error('Submissive not found in your dynamic');

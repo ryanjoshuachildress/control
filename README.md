@@ -25,6 +25,13 @@ Designed for one Dominant with multiple submissives — each submissive has exac
   punishment is assigned automatically. The Dom is notified if a punishment sits uncompleted 24 hours.
 - **Stats** — mood and day-rating line charts, check-in streak, completion-rate bars for daily tasks,
   and summary tiles (7d/30d/60d range picker). Subs see their own; Doms see each sub's.
+- **About the submissive** — the Dom keeps a profile page per sub with basic physical and demographic
+  info (name, date of birth, hair color, eye color) plus any custom fields they add. Adding a field
+  automatically adds it to **every** submissive's profile. The Dom fills in and edits the values;
+  each submissive can **read** — never edit — only the individual fields the Dom has chosen to show them.
+- **Comments** — two-way comment threads between the Dom and the submissive on journal entries,
+  tasks, punishments, and daily check-ins, with email notifications. Only the Dom and the
+  submissive(s) who can already see the item can take part in its thread.
 - **Password reset** — "Forgot password" emails a one-hour, single-use reset link (and invalidates
   all signed-in sessions for that account). With SMTP disabled the link is printed to the container
   log so self-hosted reset still works.

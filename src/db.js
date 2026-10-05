@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
@@ -114,21 +115,145 @@ CREATE TABLE IF NOT EXISTS punishments (
   completed_at TEXT
 );
 
+-- Per-submissive sharing of Dom journal entries (replaces the shared_with_sub
+-- broadcast flag, which showed a shared entry to every paired submissive).
+CREATE TABLE IF NOT EXISTS entry_shares (
+  entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  shared_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (entry_id, sub_id)
+);
+
 CREATE TABLE IF NOT EXISTS password_resets (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- One weekly-compliance evaluation per sub per week (prevents repeat punishes)
+CREATE TABLE IF NOT EXISTS performance_alerts (
+  id TEXT PRIMARY KEY,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  period_key TEXT NOT NULL,
+  sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (sub_id, period_key)
+);
+
+-- "About the submissive" profile. The Dom owns the field catalog: adding a
+-- field adds it to every paired submissive's profile. Values are
+-- per-submissive and only the Dom can write them; a submissive sees a field
+-- only if the Dom has exposed it to them specifically (profile_exposure).
+CREATE TABLE IF NOT EXISTS profile_fields (
+  id TEXT PRIMARY KEY,
+  dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  multiline INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS profile_values (
+  id TEXT PRIMARY KEY,
+  field_id TEXT NOT NULL REFERENCES profile_fields(id) ON DELETE CASCADE,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (field_id, sub_id)
+);
+
+CREATE TABLE IF NOT EXISTS profile_exposure (
+  field_id TEXT NOT NULL REFERENCES profile_fields(id) ON DELETE CASCADE,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  shown_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (field_id, sub_id)
+);
+
+-- Two-way comment threads on journal entries, tasks, punishments and
+-- check-ins, between a Dom and the submissive(s) who can already see the item.
+CREATE TABLE IF NOT EXISTS comments (
+  id TEXT PRIMARY KEY,
+  subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin')),
+  subject_id TEXT NOT NULL,
+  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
 `);
+
+// Migration: comments threads first shipped with entry+task subjects only.
+// SQLite can't alter a CHECK, so copy the rows into a widened table.
+try {
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'").get();
+  if (t && t.sql && !t.sql.includes("'punishment'")) {
+    db.exec(`
+      CREATE TABLE comments_new (
+        id TEXT PRIMARY KEY,
+        subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin')),
+        subject_id TEXT NOT NULL,
+        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO comments_new (id, subject, subject_id, author_id, body, created_at)
+        SELECT id, subject, subject_id, author_id, body, created_at FROM comments;
+      DROP TABLE comments;
+      ALTER TABLE comments_new RENAME TO comments;
+      CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
+    `);
+  }
+} catch (err) { console.error('[db] comments subject migration failed:', err); }
+
+// The starter catalog every Dominant gets (basic physical + demographic info).
+const DEFAULT_FIELD_LABELS = ['Full name', 'Date of birth', 'Hair color', 'Eye color'];
+
+// Gives a Dom the starter fields if their catalog is empty. Called when a new
+// Dom registers, and during the one-time migration for Doms who predate these
+// tables so an empty catalog never leaves the page blank.
+function seedDefaultFields(domId) {
+  try {
+    if (db.prepare('SELECT COUNT(*) AS n FROM profile_fields WHERE dom_id = ?').get(domId).n > 0) return;
+    const ins = db.prepare('INSERT INTO profile_fields (id, dom_id, label, position) VALUES (?, ?, ?, ?)');
+    db.transaction(() => {
+      DEFAULT_FIELD_LABELS.forEach((label, i) => ins.run(crypto.randomUUID(), domId, label, i));
+    })();
+  } catch (err) { console.error('[db] profile field seed failed:', err); }
+}
+
+// One-time migration: Doms who registered before these tables existed.
+try {
+  const doms = db.prepare("SELECT id FROM users WHERE role = 'dom'").all();
+  if (doms.length && db.prepare('SELECT COUNT(*) AS n FROM profile_fields').get().n === 0) {
+    db.transaction(() => { for (const d of doms) seedDefaultFields(d.id); })();
+  }
+} catch (err) { console.error('[db] profile field migration failed:', err); }
 
 // Migrations for databases created before punishments / password reset / auto-punish.
 function addColumn(table, column, def) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`); } catch { /* column exists */ }
 }
 addColumn('tasks', 'auto_punish_title', "TEXT NOT NULL DEFAULT ''");
+addColumn('tasks', 'due_date', 'TEXT');
 addColumn('users', 'pw_version', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'weekly_punish_title', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'weekly_punish_pct', 'INTEGER');
+
+// Migration: carry every already-shared entry's visibility over, per submissive,
+// then retire the broadcast flag. Only existing rows are touched; the flag stays 0.
+try {
+  if (db.prepare('SELECT COUNT(*) AS n FROM entries WHERE shared_with_sub = 1').get().n > 0) {
+    const shared = db.prepare('SELECT id, owner_id FROM entries WHERE shared_with_sub = 1').all();
+    const subsOf = db.prepare("SELECT id FROM users WHERE dom_id = ? AND role = 'sub'");
+    const addShare = db.prepare('INSERT OR IGNORE INTO entry_shares (entry_id, sub_id) VALUES (?, ?)');
+    db.transaction(() => {
+      for (const e of shared) for (const s of subsOf.all(e.owner_id)) addShare.run(e.id, s.id);
+      db.prepare('UPDATE entries SET shared_with_sub = 0 WHERE shared_with_sub = 1').run();
+    })();
+  }
+} catch (err) { console.error('[db] entry_shares migration failed:', err); }
 
 module.exports = db;
 module.exports.DATA_DIR = DATA_DIR;
 module.exports.UPLOAD_DIR = UPLOAD_DIR;
+module.exports.seedDefaultFields = seedDefaultFields;

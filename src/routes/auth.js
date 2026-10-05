@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const mail = require('../lib/mail');
+const { seedDefaultFields } = require('../db');
 const { attachUser, startSession, requireAuth } = require('../lib/auth');
 
 const router = express.Router();
@@ -115,6 +116,7 @@ router.post('/register', (req, res) => {
   }
 
   startSession(req, id, 0);
+  if (role === 'dom') seedDefaultFields(id); // starter profile fields
   res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)) });
 });
 

@@ -21,11 +21,15 @@ function init() {
   });
 }
 
+function esc(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function wrap(title, bodyHtml) {
   return `<!doctype html><html><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#12121a;color:#e8e4ee;padding:24px">
   <div style="max-width:520px;margin:0 auto;background:#1b1b26;border:1px solid #2e2e3e;border-radius:12px;padding:24px">
     <div style="font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#c58a9a;margin-bottom:12px">Control</div>
-    <h2 style="margin:0 0 16px;font-size:18px;color:#efe9f1">${title}</h2>
+    <h2 style="margin:0 0 16px;font-size:18px;color:#efe9f1">${esc(title)}</h2>
     <div style="font-size:14px;line-height:1.6">${bodyHtml}</div>
     <div style="margin-top:24px;font-size:12px;color:#7d7890"><a style="color:#c58a9a" href="${baseUrl}">Open Control</a></div>
   </div></body></html>`;

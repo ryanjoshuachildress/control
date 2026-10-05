@@ -91,14 +91,30 @@ function deadlineInstant(tz, frequency, key) {
   return instantOfDay(tz, y, m, d, 24);
 }
 
+// Instant a specific YYYY-MM-DD due date ends: end of that day (local midnight).
+// Used for tasks with a Dom-set due date that overrides the frequency cycle.
+function dueDateInstant(tz, dateKey) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return instantOfDay(tz, y, m, d, 24);
+}
+
 function isPastDeadline(now, tz, frequency, key) {
   return now.getTime() >= deadlineInstant(tz, frequency, key).getTime();
+}
+
+// SQLite `datetime('now')` text ("YYYY-MM-DD HH:MM:SS") parsed as UTC.
+function parseSqliteTimestamp(s) {
+  const d = new Date(String(s).replace(' ', 'T') + 'Z');
+  return isNaN(d.valueOf()) ? null : d;
 }
 
 module.exports = {
   currentPeriodKey,
   previousPeriodKey,
   deadlineInstant,
+  dueDateInstant,
   currentDateKey,
-  isPastDeadline
+  isPastDeadline,
+  parseSqliteTimestamp,
+  shiftDateKey
 };

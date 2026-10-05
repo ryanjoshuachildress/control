@@ -74,10 +74,13 @@ function route() {
     if (page === 'settings') return renderSettings();
     return renderDash();
   }
-  if (page === 'journal') return renderSubJournal();
-  if (page === 'stats') return renderStats();
-  if (page === 'settings') return renderSettings();
-  return renderToday();
+  if (user.role === 'sub') {
+    if (page === 'about') return renderSubAbout();
+    if (page === 'journal') return renderSubJournal();
+    if (page === 'stats') return renderStats();
+    if (page === 'settings') return renderSettings();
+    return renderToday();
+  }
 }
 
 function go(hash) { location.hash = hash; }
@@ -187,7 +190,7 @@ function renderReset(token) {
 /* ---------- shell ---------- */
 const TABS = {
   dom: [['#/dash', 'Dashboard'], ['#/journal', 'My journal'], ['#/settings', 'Settings']],
-  sub: [['#/today', 'Today'], ['#/journal', 'Journal'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
+  sub: [['#/today', 'Today'], ['#/journal', 'Journal'], ['#/about', 'About me'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
 };
 
 function shell(active, inner) {
@@ -221,7 +224,7 @@ async function renderToday() {
       <div class="spread">
         <div><div class="title">${esc(t.title)}</div>
           ${t.description ? `<div class="muted">${esc(t.description)}</div>` : ''}</div>
-        <span class="chip">${esc(FREQ_LABEL[t.frequency] || t.frequency)}</span>
+        <span class="chip">${t.due_date ? `Due ${esc(fmtDate(t.due_date))}` : esc(FREQ_LABEL[t.frequency] || t.frequency)}</span>
       </div>
       <div class="row" style="margin-top:12px">
         ${t.done
@@ -235,6 +238,7 @@ async function renderToday() {
                    <button class="primary small" type="submit" style="margin-top:22px">Submit evidence</button>
                  </form>`)}
       </div>
+      ${commentsBlock('task', t.id, t.comment_count)}
     </div>`;
 
   const checkinHtml = `
@@ -257,6 +261,7 @@ async function renderToday() {
         <label class="f"><span>Something sexual you thought about or did today</span><textarea name="sexual_notes" maxlength="4000">${esc((checkin.checkin && checkin.checkin.sexual_notes) || '')}</textarea></label>
         <button class="primary" type="submit">${checkin.checkin ? 'Update check-in' : 'Submit check-in'}</button>
       </form>
+      ${checkin.checkin ? commentsBlock('checkin', checkin.checkin.id, checkin.checkin.comment_count) : ''}
     </div>`;
 
   const punishCard = (p) => `
@@ -276,6 +281,7 @@ async function renderToday() {
                <button class="primary small" type="submit" style="margin-top:22px">Submit evidence</button>
              </form>`}
       </div>
+      ${commentsBlock('punishment', p.id, p.comment_count)}
     </div>`;
 
   shell('#/today', `
@@ -336,6 +342,7 @@ async function renderSubJournal() {
       ${e.prompt_text ? `<div class="muted">Prompt: ${esc(e.prompt_text)}</div>` : ''}
       <div class="entry-body">${esc(e.body)}</div>
       <div class="entry-meta">${esc(fmtDT(e.created_at))}</div>
+      ${commentsBlock('entry', e.id, e.comment_count)}
     </div>`;
 
   shell('#/journal', `
@@ -351,6 +358,56 @@ async function renderSubJournal() {
       </form>
       ${mine.entries.length ? mine.entries.map(entryCard).join('') : '<div class="empty">No entries yet.</div>'}
     </div>`);
+}
+
+/* ---------- sub: about me (read-only, Dom-controlled) ---------- */
+async function renderSubAbout() {
+  let d;
+  try { d = await api('/profile/mine'); }
+  catch (e) { return shell('#/about', `<div class="empty">${esc(e.message)}</div>`); }
+
+  const row = (f) => `
+    <div class="item" style="${f.multiline ? '' : ''}">
+      <div class="tiny">${esc(f.label)}</div>
+      <div class="entry-body" style="margin-top:2px">${f.value ? esc(f.value) : '<span class="tiny">—</span>'}</div>
+    </div>`;
+
+  shell('#/about', `
+    <div class="card"><h2>About me</h2>
+      <p class="hint">${d.dom
+        ? `Your ${esc(d.dom.title || 'Dominant')} keeps this information — only they can edit it, and only what they have chosen to show you appears here.`
+        : 'Pair with a Dominant to see this page.'}
+      </p>
+      ${d.fields.length ? d.fields.map(row).join('') : '<div class="empty">Nothing shared with you yet.</div>'}
+    </div>`);
+}
+
+/* ---------- comment threads (journals & tasks) ---------- */
+const commentsBlock = (subject, id, count) => `
+  <div class="comments" data-comment-subject="${esc(subject)}" data-comment-id="${esc(id)}">
+    <button class="small ghost" data-action="toggle-comments">💬 Comments${count ? ` · ${count}` : ''}</button>
+    <div class="comment-list" hidden></div>
+    <form data-form="comment" class="comment-form" hidden>
+      <label class="f" style="margin:10px 0"><textarea name="body" maxlength="2000" required placeholder="Write a comment…"></textarea></label>
+      <button class="primary small" type="submit">Post comment</button>
+    </form>
+  </div>`;
+
+async function loadComments(box) {
+  const list = box.querySelector('.comment-list');
+  list.innerHTML = '<div class="tiny" style="padding:4px 6px">Loading…</div>';
+  try {
+    const d = await api(`/comments/${box.dataset.commentSubject}/${box.dataset.commentId}`);
+    list.innerHTML = d.comments.length ? d.comments.map(c => `
+      <div class="comment">
+        <div class="comment-head"><b>${esc(c.author_name)}</b>${c.author_title ? `<span>· ${esc(c.author_title)}</span>` : ''}
+          <span>${esc(fmtDT(c.created_at))}</span>
+          ${c.can_delete ? `<button class="small ghost comment-del" data-action="del-comment" data-comment="${esc(c.id)}">delete</button>` : ''}
+        </div>
+        <div class="comment-body">${esc(c.body)}</div>
+      </div>`).join('')
+      : '<div class="empty" style="padding:8px">No comments yet.</div>';
+  } catch (e) { list.innerHTML = `<div class="tiny" style="padding:4px 6px">${esc(e.message)}</div>`; }
 }
 
 /* ---------- stats & charts ---------- */
@@ -580,7 +637,7 @@ async function renderDomSub(subId, tab) {
   catch (e) { return shell('#/dash', `<div class="empty">${esc(e.message)}</div>`); }
 
   const tabs = [
-    ['tasks', 'Tasks'], ['punishments', 'Punishments'], ['checkins', 'Check-ins'], ['stats', 'Stats'], ['journal', 'Journal']
+    ['tasks', 'Tasks'], ['punishments', 'Punishments'], ['checkins', 'Check-ins'], ['stats', 'Stats'], ['journal', 'Journal'], ['profile', 'About']
   ].map(([k, l]) => `<a href="#/sub/${esc(subId)}/${k}" class="${tab === k ? 'on' : ''}">${l}</a>`).join('');
   statsCtx = tab === 'stats' ? { subId } : null;
 
@@ -592,16 +649,22 @@ async function renderDomSub(subId, tab) {
         <div class="spread">
           <div><div class="title">${esc(t.title)}</div>
             ${t.description ? `<div class="muted">${esc(t.description)}</div>` : ''}
-            <div class="tiny">${esc(FREQ_LABEL[t.frequency] || t.frequency)} · needs ${esc(t.completion_mode === 'evidence' ? 'photo/video evidence' : 'checkbox')}
+            <div class="tiny">${t.due_date
+              ? `One-off — due <span class="pun-text">${esc(fmtDate(t.due_date))}</span> (end of day) · needs ${esc(t.completion_mode === 'evidence' ? 'photo/video evidence' : 'checkbox')}`
+              : `${esc(FREQ_LABEL[t.frequency] || t.frequency)} · needs ${esc(t.completion_mode === 'evidence' ? 'photo/video evidence' : 'checkbox')}`}
               ${t.auto_punish_title ? ` · auto-punish on miss: <span class="pun-text">${esc(t.auto_punish_title)}</span>` : ''}</div>
           </div>
           <div class="row">
-            ${t.active ? (t.current_done ? '<span class="chip good">this period ✓</span>' : '<span class="chip acc">this period open</span>') : '<span class="chip">inactive</span>'}
+            ${t.current_done
+              ? (t.due_date ? '<span class="chip good">done ✓</span>' : '<span class="chip good">this period ✓</span>')
+              : (t.active ? (t.due_date ? '<span class="chip acc">due date open</span>' : '<span class="chip acc">this period open</span>') : '<span class="chip">inactive</span>')}
             <button class="small" data-action="toggle-task" data-id="${esc(t.id)}" data-active="${t.active}">${t.active ? 'Pause' : 'Resume'}</button>
             <button class="small danger" data-action="del-task" data-id="${esc(t.id)}">Delete</button>
           </div>
         </div>
-      </div>`;
+      </div>
+      ${commentsBlock('task', t.id, t.comment_count)}
+    </div>`;
 
     const compRow = (c) => `
       <tr><td>${esc(fmtDT(c.completed_at))}</td><td>${esc(c.task_title)}</td><td>${esc(c.period_key)}</td>
@@ -621,10 +684,12 @@ async function renderDomSub(subId, tab) {
               <select name="frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
             <label class="f" style="flex:1;min-width:150px"><span>Completed by</span>
               <select name="completion_mode"><option value="checkoff">Checking it off</option><option value="evidence">Photo / video evidence</option></select></label>
+            <label class="f" style="flex:1;min-width:160px"><span>Due date <span class="tiny">(optional)</span></span>
+              <input type="date" name="due_date"></label>
           </div>
           <label class="f"><span>Auto-punishment on missed deadline <span class="tiny">(optional — assigned automatically, due in 24h)</span></span>
             <input type="text" name="auto_punish_title" maxlength="120" placeholder="e.g. No dessert, early bedtime, corner time"></label>
-          <div class="tiny" style="margin:-6px 0 12px">Daily tasks close at midnight ${esc(d.sub.timezone)}; weekly at Sunday midnight; monthly at the end of the month.</div>
+          <div class="tiny" style="margin:-6px 0 12px">Daily tasks close at midnight ${esc(d.sub.timezone)}; weekly at Sunday midnight; monthly at the end of the month. An optional due date overrides all of that — the task closes at the end of that day (midnight ${esc(d.sub.timezone)} time), once.</div>
           <button class="primary" type="submit">Assign task</button>
         </form>
       </div>
@@ -656,6 +721,7 @@ async function renderDomSub(subId, tab) {
         ${c.best_part ? `<div class="entry-body"><b>Best part:</b> ${esc(c.best_part)}</div>` : ''}
         ${c.worst_part ? `<div class="entry-body"><b>Worst part:</b> ${esc(c.worst_part)}</div>` : ''}
         ${c.sexual_notes ? `<div class="entry-body"><b>Sexual thoughts/activities:</b> ${esc(c.sexual_notes)}</div>` : ''}
+        ${commentsBlock('checkin', c.id, c.comment_count)}
       </div>`;
 
     inner = `<div class="card"><h2>Check-in summary</h2>
@@ -665,8 +731,9 @@ async function renderDomSub(subId, tab) {
   }
 
   if (tab === 'punishments') {
-    let pd = { open: [], history: [] };
+    let pd = { open: [], history: [], weekly: { title: '', pct: null } };
     try { pd = await api(`/punishments/dom/sub/${subId}`); } catch (e) { /* fall through */ }
+    const wk = pd.weekly || { title: '', pct: null };
 
     const punRow = (p) => `
       <div class="item">
@@ -683,6 +750,7 @@ async function renderDomSub(subId, tab) {
         ${p.note ? `<div class="entry-body"><b>Note:</b> ${esc(p.note)}</div>` : ''}
         ${p.evidence_path ? `<div class="evid-links" style="margin-top:8px"><a href="/uploads/${esc(p.evidence_path)}" target="_blank">view evidence</a></div>` : ''}
         ${p.completed_at ? `<div class="tiny" style="margin-top:6px">completed ${esc(fmtDT(p.completed_at))}</div>` : ''}
+        ${commentsBlock('punishment', p.id, p.comment_count)}
       </div>`;
 
     inner = `
@@ -696,11 +764,65 @@ async function renderDomSub(subId, tab) {
         </form>
         <p class="tiny" style="margin-top:10px">Tip: to punish a submissive automatically when they miss a task, set an auto-punishment on the task itself (Tasks tab). Punishments are due within 24 hours of assignment; you're notified if one sits uncompleted.</p>
       </div>
+      <div class="card"><h2>Weekly compliance punish</h2>
+        <p class="hint">When the week closes at Sunday midnight, their daily-task completion rate for that week is checked. If it is under your threshold, this punishment is auto-assigned once. ${wk.title ? `Currently: <span class="pun-text">${esc(wk.title)}</span> under ${esc(String(wk.pct))}%.` : 'Currently off.'}</p>
+        <form data-form="weekly-punish" data-sub="${esc(subId)}">
+          <label class="f"><span>Punishment (leave empty and save to disable)</span>
+            <input type="text" name="title" maxlength="120" value="${esc(wk.title)}" placeholder="e.g. Early bedtime all week"></label>
+          <label class="f" style="max-width:260px"><span>Minimum required daily-task completion %</span>
+            <input type="number" name="pct" min="1" max="100" step="1" value="${wk.pct == null ? 70 : esc(String(wk.pct))}"></label>
+          <button class="primary small" type="submit">Save weekly rule</button>
+        </form>
+      </div>
       <div class="card"><h2>Open punishments</h2>
         ${pd.open.length ? pd.open.map(punRow).join('') : '<div class="empty">None open.</div>'}
       </div>
       <div class="card"><h2>History</h2>
         ${pd.history.length ? pd.history.map(punRow).join('') : '<div class="empty">No closed punishments yet.</div>'}
+      </div>`;
+  }
+
+  if (tab === 'profile') {
+    let p;
+    try { p = await api(`/profile/sub/${subId}`); } catch (e) { p = { fields: [] }; }
+
+    // One row per field (fields are global): edit name + value for THIS sub,
+    // flip this sub's visibility, or delete the field everywhere.
+    const fieldRow = (f) => `
+      <div class="item">
+        <div class="prof-row">
+          <label class="f" style="margin:0;flex:1;min-width:170px"><span>Field name</span>
+            <input type="text" data-pf-label="${esc(f.id)}" maxlength="120" value="${esc(f.label)}"></label>
+          <label class="f" style="margin:0;flex:2;min-width:220px"><span>Value <span class="tiny">(only you can edit)</span></span>
+            ${f.multiline
+              ? `<textarea data-pf-val="${esc(f.id)}" maxlength="4000" style="min-height:60px">${esc(f.value)}</textarea>`
+              : `<input type="text" data-pf-val="${esc(f.id)}" maxlength="4000" value="${esc(f.value)}">`}
+          </label>
+          <div class="prof-actions">
+            <button class="small primary" data-action="pf-save" data-id="${esc(f.id)}" data-sub="${esc(subId)}">Save</button>
+            <button class="small ${f.visible_to_sub ? 'good' : 'ghost'}" data-action="pf-expose" data-id="${esc(f.id)}" data-sub="${esc(subId)}" data-visible="${f.visible_to_sub ? '1' : '0'}"
+              title="${f.visible_to_sub ? `${esc(d.sub.name)} can read this field` : `${esc(d.sub.name)} cannot see this field`}">
+              👁 ${f.visible_to_sub ? 'Shown' : 'Hidden'}</button>
+            <button class="small danger" data-action="pf-del" data-id="${esc(f.id)}">Delete</button>
+          </div>
+        </div>
+      </div>`;
+
+    inner = `
+      <div class="card"><h2>About ${esc(d.sub.name)}</h2>
+        <p class="hint">Fields you create here are added to <b>every</b> submissive's profile automatically. Values and the 👁 visibility toggle are set per submissive here. A submissive can read — never edit — only the fields you have marked as shown.</p>
+        <form data-form="pf-add">
+          <div class="row">
+            <label class="f" style="margin:0;flex:1;min-width:200px"><span>New field</span>
+              <input type="text" name="label" required maxlength="120" placeholder="e.g. Shoe size"></label>
+            <label class="f" style="margin:0;width:170px"><span>Input type</span>
+              <select name="multiline"><option value="">Single line</option><option value="1">Multi-line text</option></select></label>
+            <button class="primary small" style="margin-top:22px" type="submit">Add field</button>
+          </div>
+        </form>
+      </div>
+      <div class="card"><h2>Profile fields</h2>
+        ${p.fields.length ? p.fields.map(fieldRow).join('') : '<div class="empty">No fields yet — add one above.</div>'}
       </div>`;
   }
 
@@ -713,7 +835,7 @@ async function renderDomSub(subId, tab) {
 
   if (tab === 'journal') {
     let prompts, entries;
-    try { [prompts, entries] = await Promise.all([api('/prompts'), api(`/entries/sub/${subId}`)]); }
+    try { [prompts, entries] = await Promise.all([api(`/prompts?sub_id=${encodeURIComponent(subId)}`), api(`/entries/sub/${subId}`)]); }
     catch (e) { /* fall through */ }
     prompts = (prompts && prompts.prompts) || [];
     entries = (entries && entries.entries) || [];
@@ -731,6 +853,7 @@ async function renderDomSub(subId, tab) {
         ${e.prompt_text ? `<div class="muted">Prompt: ${esc(e.prompt_text)} <span class="tiny">(${esc(e.prompt_kind || '')})</span></div>` : ''}
         <div class="entry-body">${esc(e.body)}</div>
         <div class="entry-meta">${esc(fmtDT(e.created_at))}</div>
+        ${commentsBlock('entry', e.id, e.comment_count)}
       </div>`;
 
     inner = `
@@ -760,9 +883,26 @@ async function renderDomSub(subId, tab) {
 
 /* ---------- dom: own journal ---------- */
 async function renderDomJournal() {
-  let mine;
-  try { mine = await api('/entries'); }
+  let mine, pair;
+  try { [mine, pair] = await Promise.all([api('/entries'), api('/pair')]); }
   catch (e) { return shell('#/journal', `<div class="empty">${esc(e.message)}</div>`); }
+  const subs = pair.subs || [];
+
+  // Per-submissive sharing: each entry is shared to one sub at a time.
+  const shareRow = (e) => {
+    if (!subs.length) return '';
+    const sharedChips = (e.shared_with || []).map(s =>
+      `<button class="small" data-action="unshare-sub" data-id="${esc(e.id)}" data-sub="${esc(s.sub_id)}" title="Stop sharing with ${esc(s.sub_name)}">✓ ${esc(s.sub_name)} ✕</button>`).join('');
+    const sharedIds = (e.shared_with || []).map(s => s.sub_id);
+    const options = subs.filter(s => !sharedIds.includes(s.id)).map(s =>
+      `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    return `<div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+      ${sharedChips}
+      ${options ? `<select data-share-select="${esc(e.id)}" style="max-width:200px">
+          <option value="">Share with…</option>${options}</select>
+        <button class="small" data-action="share-sub" data-id="${esc(e.id)}">Share</button>` : ''}
+    </div>`;
+  };
 
   const entryCard = (e) => `
     <div class="item">
@@ -770,14 +910,15 @@ async function renderDomJournal() {
       <div class="entry-body">${esc(e.body)}</div>
       <div class="entry-meta">${esc(fmtDT(e.created_at))}</div>
       <div class="row" style="margin-top:10px">
-        <button class="small" data-action="toggle-share" data-id="${esc(e.id)}" data-share="${e.shared_with_sub ? 1 : 0}">${e.shared_with_sub ? 'Shared with sub ✓ (hide)' : 'Share with sub'}</button>
         <button class="small danger" data-action="del-entry" data-id="${esc(e.id)}">Delete</button>
       </div>
+      ${shareRow(e)}
+      ${commentsBlock('entry', e.id, e.comment_count)}
     </div>`;
 
   shell('#/journal', `
     <div class="card"><h2>Write a journal entry</h2>
-      <p class="hint">Entries start private. Share any entry with your submissives individually.</p>
+      <p class="hint">Entries start private. Share each one with the submissive of your choice — no other submissive can see it.</p>
       <form data-form="entry" data-dom-entry>
         <label class="f"><textarea name="body" maxlength="8000" placeholder="Your private thoughts, instructions, reflections…" required></textarea></label>
         <button class="primary small" type="submit">Save entry</button>
@@ -926,7 +1067,7 @@ const forms = {
   async entry(f) {
     try {
       await api('/entries', { method: 'POST', body: {
-        prompt_id: f.dataset.prompt || null, body: f.body.value, share: !!f.dataset.domEntry
+        prompt_id: f.dataset.prompt || null, body: f.body.value
       }});
       toast('Entry saved');
       route();
@@ -938,6 +1079,7 @@ const forms = {
       await api('/tasks', { method: 'POST', body: {
         sub_id: f.dataset.sub, title: f.title.value, description: f.description.value,
         frequency: f.frequency.value, completion_mode: f.completion_mode.value,
+        due_date: f.due_date ? f.due_date.value : '',
         auto_punish_title: f.auto_punish_title ? f.auto_punish_title.value : ''
       }});
       toast('Task assigned');
@@ -964,6 +1106,16 @@ const forms = {
     } catch (e) { toast(e.message, true); }
   },
 
+  async weeklyPunish(f) {
+    try {
+      const res = await api(`/punishments/dom/sub/${f.dataset.sub}/weekly`, {
+        method: 'PUT', body: { title: f.title.value, pct: f.pct.value }
+      });
+      toast(res.weekly && res.weekly.title ? 'Weekly compliance rule saved' : 'Weekly compliance rule disabled');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+
   async pair(f) {
     try {
       await api('/pair', { method: 'POST', body: { code: f.code.value } });
@@ -982,6 +1134,31 @@ const forms = {
       user = d.user;
       toast('Profile saved');
       route();
+    } catch (e) { toast(e.message, true); }
+  },
+
+  async pfAdd(f) {
+    try {
+      await api('/profile/fields', { method: 'POST', body: {
+        label: f.label.value, multiline: f.multiline.value === '1'
+      }});
+      toast("Field added — it's now on every submissive's profile");
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+
+  async comment(f) {
+    const box = f.closest('.comments');
+    try {
+      await api(`/comments/${box.dataset.commentSubject}/${box.dataset.commentId}`,
+                { method: 'POST', body: { body: f.body.value } });
+      f.body.value = '';
+      const list = box.querySelector('.comment-list');
+      await loadComments(box);
+      list.hidden = false; f.hidden = false;
+      const btn = box.querySelector('[data-action="toggle-comments"]');
+      const m = btn.textContent.match(/·\s*(\d+)/);
+      btn.innerHTML = `💬 Comments · ${(m ? Number(m[1]) : 0) + 1}`;
     } catch (e) { toast(e.message, true); }
   }
 };
@@ -1030,9 +1207,21 @@ const actions = {
     try { await api(`/prompts/${btn.dataset.id}`, { method: 'DELETE' }); toast('Prompt deleted'); route(); }
     catch (e) { toast(e.message, true); }
   },
-  'toggle-share': async (btn) => {
-    try { await api(`/entries/${btn.dataset.id}`, { method: 'PATCH', body: { share: btn.dataset.share !== '1' } }); route(); }
-    catch (e) { toast(e.message, true); }
+  'share-sub': async (btn) => {
+    const sel = app.querySelector(`select[data-share-select="${btn.dataset.id}"]`);
+    if (!sel || !sel.value) return toast('Choose a submissive to share with', true);
+    try {
+      await api(`/entries/${btn.dataset.id}`, { method: 'PATCH', body: { share_sub_id: sel.value } });
+      toast('Shared with 1 submissive');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+  'unshare-sub': async (btn) => {
+    try {
+      await api(`/entries/${btn.dataset.id}`, { method: 'PATCH', body: { unshare_sub_id: btn.dataset.sub } });
+      toast('Sharing stopped');
+      route();
+    } catch (e) { toast(e.message, true); }
   },
   'del-entry': async (btn) => {
     if (!confirm('Delete this entry?')) return;
@@ -1048,6 +1237,45 @@ const actions = {
     if (!confirm('Unpair this submissive? Their tasks and prompts will be deactivated.')) return;
     try { await api('/pair', { method: 'DELETE', body: { sub_id: btn.dataset.id } }); toast('Unpaired'); route(); }
     catch (e) { toast(e.message, true); }
+  },
+  'pf-save': async (btn) => {
+    const id = btn.dataset.id, subId = btn.dataset.sub;
+    const label = app.querySelector(`[data-pf-label="${id}"]`);
+    const val = app.querySelector(`[data-pf-val="${id}"]`);
+    try {
+      await api(`/profile/fields/${id}`, { method: 'PATCH', body: { label: label.value } });
+      await api(`/profile/sub/${subId}/value`, { method: 'PUT', body: { field_id: id, value: val.value } });
+      toast('Field saved');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+  'pf-expose': async (btn) => {
+    try {
+      await api('/profile/expose', { method: 'PATCH', body: {
+        field_id: btn.dataset.id, sub_id: btn.dataset.sub, visible: btn.dataset.visible !== '1'
+      }});
+      toast(btn.dataset.visible === '1' ? 'Hidden from this submissive' : 'Now visible to this submissive');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+  'pf-del': async (btn) => {
+    if (!confirm("Delete this field from every submissive's profile? Its values are lost.")) return;
+    try { await api(`/profile/fields/${btn.dataset.id}`, { method: 'DELETE' }); toast('Field deleted'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'toggle-comments': async (btn) => {
+    const box = btn.closest('.comments');
+    const list = box.querySelector('.comment-list');
+    const form = box.querySelector('form');
+    if (list.hidden) {
+      await loadComments(box);
+      list.hidden = false; form.hidden = false;
+    } else { list.hidden = true; form.hidden = true; }
+  },
+  'del-comment': async (btn) => {
+    const box = btn.closest('.comments');
+    try { await api(`/comments/${btn.dataset.comment}`, { method: 'DELETE' }); await loadComments(box); }
+    catch (e) { toast(e.message, true); }
   }
 };
 
@@ -1061,7 +1289,9 @@ app.addEventListener('submit', (e) => {
   const f = e.target.closest('form[data-form]');
   if (!f) return;
   e.preventDefault();
-  if (forms[f.dataset.form]) forms[f.dataset.form](f);
+  // data-form uses kebab-case ("punish-evidence"); handler keys are camelCase.
+  const key = String(f.dataset.form || '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  if (forms[key]) forms[key](f);
 });
 
 app.addEventListener('input', (e) => {

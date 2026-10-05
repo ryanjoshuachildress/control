@@ -14,6 +14,8 @@ const checkinRoutes = require('./routes/checkins');
 const journalRoutes = require('./routes/journals');
 const punishmentRoutes = require('./routes/punishments');
 const statsRoutes = require('./routes/stats');
+const profileRoutes = require('./routes/profiles');
+const commentRoutes = require('./routes/comments');
 
 const app = express();
 app.disable('x-powered-by');
@@ -43,6 +45,8 @@ app.use('/api/checkins', checkinRoutes);
 app.use('/api', journalRoutes);
 app.use('/api/punishments', punishmentRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/comments', commentRoutes);
 
 // Evidence files — only the submitting sub or their Dom may view them.
 app.get('/uploads/:file', requireAuth, (req, res) => {

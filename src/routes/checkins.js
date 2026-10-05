@@ -12,6 +12,10 @@ router.use(attachUser);
 router.get('/today', requireSub, (req, res) => {
   const date = time.currentDateKey(new Date(), req.user.timezone);
   const checkin = db.prepare('SELECT * FROM checkins WHERE sub_id = ? AND date = ?').get(req.user.id, date) || null;
+  if (checkin) {
+    checkin.comment_count = db.prepare(
+      "SELECT COUNT(*) AS n FROM comments WHERE subject = 'checkin' AND subject_id = ?").get(checkin.id).n;
+  }
   res.json({ date, timezone: req.user.timezone, checkin });
 });
 
@@ -29,14 +33,16 @@ router.post('/', requireSub, (req, res) => {
                 WHERE id = ?`)
       .run(moodV, ratingV, String(best_part || '').slice(0, 2000), String(worst_part || '').slice(0, 2000),
            String(sexual_notes || '').slice(0, 4000), existing.id);
+    res.json({ ok: true, date, checkin_id: existing.id });
   } else {
+    const id = crypto.randomUUID();
     db.prepare(`INSERT INTO checkins (id, sub_id, date, mood, day_rating, best_part, worst_part, sexual_notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(crypto.randomUUID(), req.user.id, date, moodV, ratingV,
+      .run(id, req.user.id, date, moodV, ratingV,
            String(best_part || '').slice(0, 2000), String(worst_part || '').slice(0, 2000),
            String(sexual_notes || '').slice(0, 4000));
+    res.json({ ok: true, date, checkin_id: id });
   }
-  res.json({ ok: true, date });
 });
 
 // submissive: own recent check-ins
@@ -48,7 +54,9 @@ router.get('/mine', requireSub, (req, res) => {
 // dominant: a sub's check-ins
 router.get('/dom/:subId', requireDom, (req, res) => {
   const sub = assertDomOwnsSub(db, req.user.id, req.params.subId);
-  const rows = db.prepare('SELECT * FROM checkins WHERE sub_id = ? ORDER BY date DESC LIMIT 60').all(sub.id);
+  const rows = db.prepare(
+    `SELECT c.*, (SELECT COUNT(*) FROM comments cm WHERE cm.subject = 'checkin' AND cm.subject_id = c.id) AS comment_count
+     FROM checkins c WHERE c.sub_id = ? ORDER BY c.date DESC LIMIT 60`).all(sub.id);
   res.json({ sub: { id: sub.id, name: sub.name, title: sub.title }, checkins: rows });
 });
 

@@ -10,13 +10,16 @@ const router = express.Router();
 router.use(attachUser);
 
 const PUNISH_LABEL = { checkoff: 'checking it off', evidence: 'photo/video evidence' };
+const commentCount = db.prepare(
+  "SELECT COUNT(*) AS n FROM comments WHERE subject = 'punishment' AND subject_id = ?");
+const withCommentCount = (p) => ({ ...p, comment_count: commentCount.get(p.id).n });
 
 // ---------- submissive ----------
 
 router.get('/mine', requireSub, (req, res) => {
   const open = db.prepare("SELECT * FROM punishments WHERE sub_id = ? AND status = 'open' ORDER BY created_at").all(req.user.id);
   const recent = db.prepare("SELECT * FROM punishments WHERE sub_id = ? AND status != 'open' ORDER BY completed_at DESC, created_at DESC LIMIT 15").all(req.user.id);
-  res.json({ open, recent });
+  res.json({ open: open.map(withCommentCount), recent: recent.map(withCommentCount) });
 });
 
 router.post('/:id/complete', requireSub, (req, res) => {
@@ -79,6 +82,12 @@ router.delete('/:id', requireDom, (req, res) => {
   const p = db.prepare("SELECT * FROM punishments WHERE id = ? AND dom_id = ? AND status = 'open'").get(req.params.id, req.user.id);
   if (!p) return res.status(404).json({ error: 'Open punishment not found' });
   db.prepare("UPDATE punishments SET status = 'cancelled' WHERE id = ?").run(p.id);
+
+  const sub = db.prepare('SELECT email, email_notifications FROM users WHERE id = ?').get(p.sub_id);
+  if (sub && sub.email_notifications) {
+    mail.send(sub.email, `Punishment cancelled: ${p.title}`,
+      `<p><strong>${req.user.name}</strong> has cancelled the punishment <strong>${p.title}</strong>. Nothing is owed for it anymore.</p>`);
+  }
   res.json({ ok: true });
 });
 
@@ -86,7 +95,28 @@ router.get('/dom/sub/:subId', requireDom, (req, res) => {
   const sub = assertDomOwnsSub(db, req.user.id, req.params.subId);
   const open = db.prepare("SELECT * FROM punishments WHERE sub_id = ? AND status = 'open' ORDER BY created_at").all(sub.id);
   const history = db.prepare("SELECT * FROM punishments WHERE sub_id = ? AND status != 'open' ORDER BY COALESCE(completed_at, created_at) DESC LIMIT 30").all(sub.id);
-  res.json({ open, history });
+  res.json({ open: open.map(withCommentCount), history: history.map(withCommentCount), weekly: { title: sub.weekly_punish_title || '', pct: sub.weekly_punish_pct } });
+});
+
+// Weekly compliance auto-punishment: fired by the scheduler when the sub's
+// Sunday-midnight week ends, if daily-task completion for it was under the %.
+router.put('/dom/sub/:subId/weekly', requireDom, (req, res) => {
+  const sub = assertDomOwnsSub(db, req.user.id, req.params.subId);
+  const { title, pct } = req.body || {};
+  const cleanTitle = String(title || '').trim().slice(0, 120);
+  let pctVal = null;
+  if (pct !== undefined && pct !== null && String(pct).trim() !== '') {
+    pctVal = Number(pct);
+  }
+  if (cleanTitle && (pctVal === null || !Number.isFinite(pctVal) || pctVal < 1 || pctVal > 100)) {
+    return res.status(400).json({ error: 'Threshold must be a percentage between 1 and 100' });
+  }
+  if (!cleanTitle && pctVal !== null) {
+    return res.status(400).json({ error: 'Punishment title is required when a threshold is set' });
+  }
+  db.prepare('UPDATE users SET weekly_punish_title = ?, weekly_punish_pct = ? WHERE id = ?')
+    .run(cleanTitle, pctVal, sub.id);
+  res.json({ ok: true, weekly: { title: cleanTitle, pct: pctVal } });
 });
 
 module.exports = router;
