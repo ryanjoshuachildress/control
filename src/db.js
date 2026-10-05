@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS profile_fields (
   id TEXT PRIMARY KEY,
   dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   label TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'text' CHECK (kind IN ('text','multiline','photo')),
   multiline INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -238,6 +239,11 @@ addColumn('tasks', 'due_date', 'TEXT');
 addColumn('users', 'pw_version', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'weekly_punish_title', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'weekly_punish_pct', 'INTEGER');
+// profile field "kind" (text/multiline/photo) — carried over from the old multiline flag
+addColumn('profile_fields', 'kind', "TEXT NOT NULL DEFAULT 'text'");
+try {
+  db.prepare("UPDATE profile_fields SET kind = 'multiline' WHERE multiline = 1 AND kind = 'text'").run();
+} catch (err) { console.error('[db] profile field kind migration failed:', err); }
 
 // Migration: carry every already-shared entry's visibility over, per submissive,
 // then retire the broadcast flag. Only existing rows are touched; the flag stays 0.

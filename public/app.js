@@ -369,7 +369,12 @@ async function renderSubAbout() {
   const row = (f) => `
     <div class="item" style="${f.multiline ? '' : ''}">
       <div class="tiny">${esc(f.label)}</div>
-      <div class="entry-body" style="margin-top:2px">${f.value ? esc(f.value) : '<span class="tiny">—</span>'}</div>
+      ${(f.kind || (f.multiline ? 'multiline' : 'text')) === 'photo'
+        ? (f.value
+          ? `<a class="pf-thumb-link" href="/uploads/${esc(f.value)}" target="_blank" rel="noopener" title="View full size">
+               <img class="pf-thumb" src="/uploads/${esc(f.value)}" alt="${esc(f.label)}"></a>`
+          : '<div class="tiny" style="margin-top:4px">—</div>')
+        : `<div class="entry-body" style="margin-top:2px">${f.value ? esc(f.value) : '<span class="tiny">—</span>'}</div>`}
     </div>`;
 
   shell('#/about', `
@@ -788,18 +793,31 @@ async function renderDomSub(subId, tab) {
 
     // One row per field (fields are global): edit name + value for THIS sub,
     // flip this sub's visibility, or delete the field everywhere.
-    const fieldRow = (f) => `
+    const fieldRow = (f) => {
+      const kind = f.kind || (f.multiline ? 'multiline' : 'text');
+      const valueCtl = kind === 'photo'
+        ? `<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+             ${f.value
+               ? `<a href="/uploads/${esc(f.value)}" target="_blank" rel="noopener" title="View full size">
+                    <img class="pf-thumb" src="/uploads/${esc(f.value)}" alt="${esc(f.label)}"></a>`
+               : '<div class="tiny" style="margin-top:10px">No photo yet</div>'}
+             <label class="f" style="margin:0;flex:1;min-width:180px"><span>Replace photo <span class="tiny">(jpg, png, gif, webp)</span></span>
+               <input type="file" data-pf-photo="${esc(f.id)}" accept=".jpg,.jpeg,.png,.gif,.webp,image/*"></label>
+           </div>`
+        : (kind === 'multiline'
+          ? `<textarea data-pf-val="${esc(f.id)}" maxlength="4000" style="min-height:60px">${esc(f.value)}</textarea>`
+          : `<input type="text" data-pf-val="${esc(f.id)}" maxlength="4000" value="${esc(f.value)}">`);
+
+      return `
       <div class="item">
         <div class="prof-row">
           <label class="f" style="margin:0;flex:1;min-width:170px"><span>Field name</span>
             <input type="text" data-pf-label="${esc(f.id)}" maxlength="120" value="${esc(f.label)}"></label>
           <label class="f" style="margin:0;flex:2;min-width:220px"><span>Value <span class="tiny">(only you can edit)</span></span>
-            ${f.multiline
-              ? `<textarea data-pf-val="${esc(f.id)}" maxlength="4000" style="min-height:60px">${esc(f.value)}</textarea>`
-              : `<input type="text" data-pf-val="${esc(f.id)}" maxlength="4000" value="${esc(f.value)}">`}
+            ${valueCtl}
           </label>
           <div class="prof-actions">
-            <button class="small primary" data-action="pf-save" data-id="${esc(f.id)}" data-sub="${esc(subId)}">Save</button>
+            <button class="small primary" data-action="pf-save" data-id="${esc(f.id)}" data-sub="${esc(subId)}" data-kind="${esc(kind)}">Save</button>
             <button class="small ${f.visible_to_sub ? 'good' : 'ghost'}" data-action="pf-expose" data-id="${esc(f.id)}" data-sub="${esc(subId)}" data-visible="${f.visible_to_sub ? '1' : '0'}"
               title="${f.visible_to_sub ? `${esc(d.sub.name)} can read this field` : `${esc(d.sub.name)} cannot see this field`}">
               👁 ${f.visible_to_sub ? 'Shown' : 'Hidden'}</button>
@@ -807,6 +825,7 @@ async function renderDomSub(subId, tab) {
           </div>
         </div>
       </div>`;
+    };
 
     inner = `
       <div class="card"><h2>About ${esc(d.sub.name)}</h2>
@@ -816,7 +835,7 @@ async function renderDomSub(subId, tab) {
             <label class="f" style="margin:0;flex:1;min-width:200px"><span>New field</span>
               <input type="text" name="label" required maxlength="120" placeholder="e.g. Shoe size"></label>
             <label class="f" style="margin:0;width:170px"><span>Input type</span>
-              <select name="multiline"><option value="">Single line</option><option value="1">Multi-line text</option></select></label>
+              <select name="kind"><option value="text">Single line</option><option value="multiline">Multi-line text</option><option value="photo">Photo</option></select></label>
             <button class="primary small" style="margin-top:22px" type="submit">Add field</button>
           </div>
         </form>
@@ -1139,9 +1158,7 @@ const forms = {
 
   async pfAdd(f) {
     try {
-      await api('/profile/fields', { method: 'POST', body: {
-        label: f.label.value, multiline: f.multiline.value === '1'
-      }});
+      await api('/profile/fields', { method: 'POST', body: { label: f.label.value, kind: f.kind.value } });
       toast("Field added — it's now on every submissive's profile");
       route();
     } catch (e) { toast(e.message, true); }
@@ -1241,10 +1258,21 @@ const actions = {
   'pf-save': async (btn) => {
     const id = btn.dataset.id, subId = btn.dataset.sub;
     const label = app.querySelector(`[data-pf-label="${id}"]`);
-    const val = app.querySelector(`[data-pf-val="${id}"]`);
     try {
       await api(`/profile/fields/${id}`, { method: 'PATCH', body: { label: label.value } });
-      await api(`/profile/sub/${subId}/value`, { method: 'PUT', body: { field_id: id, value: val.value } });
+      if (btn.dataset.kind === 'photo') {
+        const inp = app.querySelector(`[data-pf-photo="${id}"]`);
+        if (!inp || !inp.files.length) return toast('Saved — the photo is unchanged (pick a new image to replace it)');
+        const fd = new FormData();
+        fd.append('photo', inp.files[0]);
+        fd.append('field_id', id);
+        const res = await fetch(`/api/profile/sub/${subId}/photo`, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+      } else {
+        const val = app.querySelector(`[data-pf-val="${id}"]`);
+        await api(`/profile/sub/${subId}/value`, { method: 'PUT', body: { field_id: id, value: val.value } });
+      }
       toast('Field saved');
       route();
     } catch (e) { toast(e.message, true); }

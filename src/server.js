@@ -49,6 +49,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/comments', commentRoutes);
 
 // Evidence files — only the submitting sub or their Dom may view them.
+// Profile photos (prefix pf-, stored as profile_values) follow the same rule.
 app.get('/uploads/:file', requireAuth, (req, res) => {
   if (!/^[\w.-]+$/.test(req.params.file)) return res.status(400).json({ error: 'Invalid path' });
   const row =
@@ -57,7 +58,12 @@ app.get('/uploads/:file', requireAuth, (req, res) => {
        JOIN tasks t ON t.id = c.task_id
        JOIN users s ON s.id = t.sub_id
        WHERE c.evidence_path = ?`).get(req.params.file) ||
-    db.prepare('SELECT sub_id, dom_id FROM punishments WHERE evidence_path = ?').get(req.params.file);
+    db.prepare('SELECT sub_id, dom_id FROM punishments WHERE evidence_path = ?').get(req.params.file) ||
+    db.prepare(
+      `SELECT pv.sub_id, u.dom_id FROM profile_values pv
+       JOIN profile_fields f ON f.id = pv.field_id AND f.kind = 'photo'
+       JOIN users u ON u.id = pv.sub_id
+       WHERE pv.value = ?`).get(req.params.file);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = req.user.role === 'sub'
     ? req.user.id === row.sub_id
