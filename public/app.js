@@ -66,15 +66,17 @@ function route() {
     return;
   }
   const parts = (location.hash || '').slice(1).split('/').filter(Boolean);
-  const page = parts[0] || (user.role === 'dom' ? 'dash' : 'today');
+  const page = parts[0] || 'feed';
 
   if (user.role === 'dom') {
+    if (page === 'feed') return renderFeed();
     if (page === 'sub' && parts[1]) return renderDomSub(parts[1], parts[2] || 'tasks');
     if (page === 'journal') return renderDomJournal();
     if (page === 'settings') return renderSettings();
     return renderDash();
   }
   if (user.role === 'sub') {
+    if (page === 'feed') return renderFeed();
     if (page === 'about') return renderSubAbout();
     if (page === 'journal') return renderSubJournal();
     if (page === 'stats') return renderStats();
@@ -189,8 +191,8 @@ function renderReset(token) {
 
 /* ---------- shell ---------- */
 const TABS = {
-  dom: [['#/dash', 'Dashboard'], ['#/journal', 'My journal'], ['#/settings', 'Settings']],
-  sub: [['#/today', 'Today'], ['#/journal', 'Journal'], ['#/about', 'About me'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
+  dom: [['#/feed', 'Feed'], ['#/dash', 'Dashboard'], ['#/journal', 'My journal'], ['#/settings', 'Settings']],
+  sub: [['#/feed', 'Feed'], ['#/today', 'Today'], ['#/journal', 'Journal'], ['#/about', 'About me'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
 };
 
 function shell(active, inner) {
@@ -413,6 +415,139 @@ async function loadComments(box) {
       </div>`).join('')
       : '<div class="empty" style="padding:8px">No comments yet.</div>';
   } catch (e) { list.innerHTML = `<div class="tiny" style="padding:4px 6px">${esc(e.message)}</div>`; }
+}
+
+/* ---------- household feed ---------- */
+const KIND_CHIP = {
+  checkin: ['', 'Check-in'],
+  task: ['acc', 'Task completed'],
+  punishment: ['bad', 'Punishment completed'],
+  entry: ['', 'Journal']
+};
+
+// One attachment: clickable thumbnail for photos, inline player for videos.
+// (Evidence on task/punishment cards was photo-only once; video evidence used
+// to render as a broken <img> — same helper now covers both.)
+function mediaHtml(a, alt) {
+  const url = `/uploads/${esc(a.path)}`;
+  if (a.media === 'video' || /\.(mp4|webm|mov|m4v)$/i.test(a.path)) {
+    return `<video class="pf-video" src="${url}" controls preload="metadata"></video>`;
+  }
+  return `<a class="pf-thumb-link" href="${url}" target="_blank" rel="noopener">
+    <img class="pf-thumb" src="${url}" alt="${esc(alt || 'Attachment')}"></a>`;
+}
+
+function feedCard(it) {
+  const isDomView = user.role === 'dom';
+  const author = `${it.author_title ? esc(it.author_title) + ' ' : ''}${esc(it.author_name)}`;
+
+  // Chip in the card head: kind label, or a special one for feed posts.
+  let chip = '';
+  if (it.kind === 'post') {
+    const label = it.author_role === 'sub' ? 'Household note'
+      : isDomView ? 'Your note' : 'From your Dominant';
+    chip = `<span class="chip acc">${label}</span>`;
+  } else {
+    const [cls, label] = KIND_CHIP[it.kind];
+    if (it.kind === 'entry' && it.author_role === 'dom') chip = `<span class="chip acc">Journal · from your Dominant</span>`;
+    else chip = `<span class="chip ${cls}">${label}</span>`;
+  }
+
+  const meta = [];
+  if (it.kind === 'checkin') {
+    meta.push(`<span class="chip good">Mood · ${esc(MOOD_WORDS[(it.mood || 1) - 1] || it.mood)}</span>`);
+    meta.push(`<span class="chip good">Day · ${esc(it.day_rating)}/10</span>`);
+  }
+  if (isDomView && (it.targets || []).length) {
+    meta.push(`<span class="tiny">→ ${it.targets.map(t => esc(t.sub_name)).join(', ')}</span>`);
+  }
+
+  let bodyHtml = '';
+  if (it.kind === 'post') {
+    bodyHtml = `<div class="entry-body">${esc(it.text)}</div>`
+      + ((it.attachments || []).length
+        ? `<div class="feed-media">${it.attachments.map(a => mediaHtml(a, 'Attachment')).join('')}</div>`
+        : '');
+  } else if (it.kind === 'checkin') {
+    const line = (label, v) => v ? `<div class="entry-body"><span class="tiny">${label}:</span> ${esc(v)}</div>` : '';
+    bodyHtml = line('Best', it.best_part) + line('Worst', it.worst_part) + line('Intimate notes', it.sexual_notes);
+  } else if (it.kind === 'task') {
+    bodyHtml = `<div class="title" style="margin-top:8px">${esc(it.task_title)}</div>`;
+    if (it.note) bodyHtml += `<div class="entry-body">${esc(it.note)}</div>`;
+    if (it.evidence_path) bodyHtml += mediaHtml({ path: it.evidence_path }, 'Evidence');
+  } else if (it.kind === 'punishment') {
+    bodyHtml = `<div class="title punish-text" style="margin-top:8px">${esc(it.title)}</div>`;
+    if (it.note) bodyHtml += `<div class="entry-body">${esc(it.note)}</div>`;
+    if (it.evidence_path) bodyHtml += mediaHtml({ path: it.evidence_path }, 'Evidence');
+  } else if (it.kind === 'entry') {
+    bodyHtml = (it.prompt_text ? `<div class="tiny" style="margin-top:8px">Re: “${esc(it.prompt_text.slice(0, 140))}”</div>` : '')
+      + `<div class="entry-body">${esc(it.text)}</div>`;
+  }
+
+  const del = it.can_delete
+    ? `<button class="small danger" data-action="del-post" data-id="${esc(it.id)}">Delete</button>` : '';
+
+  return `
+    <div class="item${it.kind === 'punishment' ? ' punish-card' : ''}">
+      <div class="spread">
+        <div class="title">${author} ${chip}</div>
+        <div class="row">${meta.join(' ')}${del}</div>
+      </div>
+      ${bodyHtml}
+      <div class="entry-meta">${esc(fmtDT(it.ts))}</div>
+      ${commentsBlock(it.comment_subject, it.comment_id, it.comment_count)}
+    </div>`;
+}
+
+async function renderFeed() {
+  let feed, subs = [];
+  try {
+    const jobs = [api('/feed')];
+    if (user.role === 'dom') jobs.push(api('/pair')); // subs list for the audience picker
+    const [f, p] = await Promise.all(jobs);
+    feed = f; subs = ((p && p.subs) || []);
+  } catch (e) { return shell('#/feed', `<div class="empty">${esc(e.message)}</div>`); }
+
+  const isDom = user.role === 'dom';
+  const targetsHtml = subs.map(s =>
+    `<label class="chip-target"><input type="checkbox" name="target" value="${esc(s.id)}" disabled> ${esc(s.title ? s.title + ' ' + s.name : s.name)}</label>`
+  ).join('');
+  const compose = `
+    <div class="card"><h2>${isDom ? 'Post to your household' : 'Write to your Dominant'}</h2>
+      ${isDom && !subs.length ? '<p class="hint">No submissives paired yet — posts stay visible to you only.</p>' : ''}
+      <form data-form="feed-post">
+        <label class="f"><textarea name="body" maxlength="8000"
+          placeholder="${isDom ? 'Something for your submissives…' : 'Only your Dominant will see this…'}"></textarea></label>
+        <label class="f"><span>Photos or videos (up to 10, 512 MB each)</span>
+          <input type="file" name="media" multiple
+            accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"></label>
+        ${isDom ? `
+        <div class="feed-audience">
+          <label class="row"><input type="radio" name="audience" value="all" checked style="width:auto"> <span style="margin:0">Everyone — all ${subs.length} submissive${subs.length === 1 ? '' : 's'}</span></label>
+          <label class="row"><input type="radio" name="audience" value="chosen" style="width:auto"> <span style="margin:0">Choose below</span></label>
+          <div class="feed-targets">${targetsHtml || '<span class="tiny">No submissives paired yet.</span>'}</div>
+        </div>` : ''}
+        <button class="primary" type="submit">Post</button>
+      </form>
+      ${isDom ? '<p class="hint">“Everyone” broadcasts to the submissives paired right when you post — submissives who join later do not see it.</p>'
+              : '<p class="hint">Only your Dominant can see what you post here.</p>'}
+    </div>`;
+
+  shell('#/feed', `
+    ${compose}
+    <div class="card"><h2>Feed</h2>
+      ${feed.items.length
+        ? feed.items.map(feedCard).join('')
+        : '<div class="empty">No posts yet — write the first one.</div>'}
+    </div>`);
+
+  // Audience picker: checkboxes only mean something in "Choose below" mode.
+  const form = app.querySelector('form[data-form="feed-post"]');
+  if (form) form.addEventListener('change', (e) => {
+    if (e.target.name !== 'audience') return;
+    const chosen = e.target.value === 'chosen';
+    form.querySelectorAll('input[name="target"]').forEach(i => { i.disabled = !chosen; });
+  });
 }
 
 /* ---------- stats & charts ---------- */
@@ -1164,6 +1299,30 @@ const forms = {
     } catch (e) { toast(e.message, true); }
   },
 
+  async feedPost(f) {
+    try {
+      const text = f.body.value;
+      const files = [...f.media.files];
+      if (!text.trim() && !files.length) return toast('Write something or attach a photo/video', true);
+      const fd = new FormData();
+      fd.append('body', text);
+      if (user.role === 'dom') {
+        const mode = f.querySelector('input[name="audience"]:checked');
+        if (mode && mode.value === 'chosen') {
+          const targets = [...f.querySelectorAll('input[name="target"]:checked')].map(i => i.value);
+          if (!targets.length) return toast('Pick at least one submissive, or choose Everyone', true);
+          for (const t of targets) fd.append('target_sub_ids', t);
+        } else fd.append('target_all', '1');
+      }
+      for (const file of files) fd.append('media', file);
+      const res = await fetch('/api/feed', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast('Posted');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+
   async comment(f) {
     const box = f.closest('.comments');
     try {
@@ -1291,6 +1450,11 @@ const actions = {
     try { await api(`/profile/fields/${btn.dataset.id}`, { method: 'DELETE' }); toast('Field deleted'); route(); }
     catch (e) { toast(e.message, true); }
   },
+  'del-post': async (btn) => {
+    if (!confirm('Delete this post and its comments?')) return;
+    try { await api(`/feed/${btn.dataset.id}`, { method: 'DELETE' }); toast('Post deleted'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
   'toggle-comments': async (btn) => {
     const box = btn.closest('.comments');
     const list = box.querySelector('.comment-list');
@@ -1302,7 +1466,7 @@ const actions = {
   },
   'del-comment': async (btn) => {
     const box = btn.closest('.comments');
-    try { await api(`/comments/${btn.dataset.comment}`, { method: 'DELETE' }); await loadComments(box); }
+    try { await api(`/comments/id/${btn.dataset.comment}`, { method: 'DELETE' }); await loadComments(box); }
     catch (e) { toast(e.message, true); }
   }
 };

@@ -26,6 +26,18 @@ function entryAudience(entry) {
     ...db.prepare('SELECT sub_id FROM entry_shares WHERE entry_id = ?').all(entry.id).map(r => r.sub_id)];
 }
 
+// Feed post threads: sub-authored → the sub and their Dom only; dom-authored
+// → the Dom plus exactly the submissives it was targeted to at creation.
+function postAudience(post) {
+  if (post.author_role !== 'dom') {
+    const ids = [post.author_id];
+    if (post.author_dom_id) ids.push(post.author_dom_id);
+    return ids;
+  }
+  return [post.author_id,
+    ...db.prepare('SELECT sub_id FROM feed_post_targets WHERE post_id = ?').all(post.id).map(r => r.sub_id)];
+}
+
 function checkinAudience(row) {
   const sub = db.prepare('SELECT dom_id FROM users WHERE id = ?').get(row.sub_id);
   const ids = [row.sub_id];
@@ -42,7 +54,10 @@ function loadThread(req) {
     entry: () => db.prepare('SELECT * FROM entries WHERE id = ?').get(id),
     task: () => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id),
     punishment: () => db.prepare('SELECT * FROM punishments WHERE id = ?').get(id),
-    checkin: () => db.prepare('SELECT * FROM checkins WHERE id = ?').get(id)
+    checkin: () => db.prepare('SELECT * FROM checkins WHERE id = ?').get(id),
+    post: () => db.prepare(
+      `SELECT p.*, u.role AS author_role, u.dom_id AS author_dom_id
+       FROM feed_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?`).get(id)
   };
   const find = finders[subject];
   if (!find) {
@@ -53,6 +68,7 @@ function loadThread(req) {
     const err = new Error('Item not found'); err.status = 404; throw err;
   }
   const audience = subject === 'entry' ? entryAudience(row)
+    : subject === 'post' ? postAudience(row)
     : subject === 'checkin' ? checkinAudience(row)
     : [row.dom_id, row.sub_id];
   if (!audience.includes(req.user.id)) {
@@ -66,13 +82,15 @@ function subjectLabel(subject, row) {
   if (subject === 'task') return `the task <strong>${esc(row.title)}</strong>`;
   if (subject === 'punishment') return `the punishment <strong>${esc(row.title)}</strong>`;
   if (subject === 'checkin') return `their <strong>${esc(row.date)}</strong> check-in`;
+  if (subject === 'post') return 'a feed post';
   const p = db.prepare('SELECT text FROM prompts WHERE id = ?').get(row.prompt_id);
   return `a journal entry${p ? ` (“${esc(p.text.slice(0, 100))}”)` : ''}`;
 }
 
 router.get('/:subject/:subjectId', requireAuth, (req, res) => {
   const { row } = loadThread(req);
-  const canDelete = c => c.author_id === req.user.id || req.user.role === 'dom';
+  // Only the Dom moderates comment threads; submissives see no delete control.
+  const canDelete = () => req.user.role === 'dom';
   const comments = db.prepare(
     `SELECT c.id, c.author_id, c.body, c.created_at, u.name AS author_name, u.title AS author_title
      FROM comments c JOIN users u ON u.id = c.author_id
@@ -106,21 +124,25 @@ router.post('/:subject/:subjectId', requireAuth, (req, res) => {
   res.json({ ok: true, id });
 });
 
-// Author or the thread's Dom may remove a comment.
+// Only the Dom may remove a comment (within their thread audience scope).
 router.delete('/id/:commentId', requireAuth, (req, res) => {
   const c = db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.commentId);
   if (!c) return res.status(404).json({ error: 'Comment not found' });
-  let allowed = c.author_id === req.user.id;
-  if (!allowed && req.user.role === 'dom') {
+  let allowed = false;
+  if (req.user.role === 'dom') {
     const finders = {
       entry: () => db.prepare('SELECT * FROM entries WHERE id = ?').get(c.subject_id),
       task: () => db.prepare('SELECT * FROM tasks WHERE id = ?').get(c.subject_id),
       punishment: () => db.prepare('SELECT * FROM punishments WHERE id = ?').get(c.subject_id),
-      checkin: () => db.prepare('SELECT * FROM checkins WHERE id = ?').get(c.subject_id)
+      checkin: () => db.prepare('SELECT * FROM checkins WHERE id = ?').get(c.subject_id),
+      post: () => db.prepare(
+        `SELECT p.*, u.role AS author_role, u.dom_id AS author_dom_id
+         FROM feed_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?`).get(c.subject_id)
     };
     const row = finders[c.subject] && finders[c.subject]();
     allowed = !!row && (c.subject === 'entry'
       ? entryAudience(row).includes(req.user.id)
+      : c.subject === 'post' ? postAudience(row).includes(req.user.id)
       : (c.subject === 'checkin' ? checkinAudience(row) : [row.dom_id, row.sub_id]).includes(req.user.id));
   }
   if (!allowed) return res.status(403).json({ error: 'Not allowed' });

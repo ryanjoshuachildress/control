@@ -243,6 +243,25 @@ button.good { color: var(--good); border-color: rgba(143, 191, 159, .45); }
 }
 .pf-thumb-link:hover .pf-thumb { border-color: var(--accent-strong); }
 
+/* feed attachments — photos sit side by side, videos play inline */
+.feed-media { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; margin-top: 8px; }
+.feed-media .pf-thumb { margin: 0; }
+.pf-video {
+  display: block; max-width: 100%; max-height: 360px; width: auto; height: auto;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--bg-inset);
+}
+
+/* feed — compose audience picker and target chips */
+.feed-audience { margin: 12px 0 14px; padding: 10px 14px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-inset); }
+.feed-targets { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 0 26px; }
+.chip-target {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px;
+  font-size: 13px; color: var(--text-dim);
+}
+.chip-target:has(input:checked) { border-color: var(--accent); color: var(--accent-strong); }
+.chip-target:has(input:disabled) { opacity: .55; }
+
 /* comment threads */
 .comments { margin-top: 10px; border-top: 1px dashed var(--line-soft); padding-top: 6px; }
 .comment { background: var(--bg-card); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 12px; margin: 8px 0 0; }

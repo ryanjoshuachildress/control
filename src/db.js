@@ -181,6 +181,41 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
+
+-- Household feed. dom_id = the household's Dominant user id (the author
+-- themself for dom posts, the author's dom_id for sub posts, NULL for an
+-- unpaired sub) so the Dom feed is one indexed filter over the whole dynamic.
+-- Sub posts are visible to their Dom only. Dom posts are visible only to the
+-- submissives listed in feed_post_targets, written at creation time — a sub
+-- paired later does not see older "everyone" posts.
+CREATE TABLE IF NOT EXISTS feed_posts (
+  id TEXT PRIMARY KEY,
+  dom_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feed_posts_dom ON feed_posts(dom_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feed_posts_author ON feed_posts(author_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS feed_post_targets (
+  post_id TEXT NOT NULL REFERENCES feed_posts(id) ON DELETE CASCADE,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (post_id, sub_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feed_targets_sub ON feed_post_targets(sub_id);
+
+-- Photos/videos on feed posts. Files live in uploads/ named fp-*; path is the
+-- uploads filename, media picks the <img> vs <video> rendering branch.
+CREATE TABLE IF NOT EXISTS feed_attachments (
+  id TEXT PRIMARY KEY,
+  post_id TEXT NOT NULL REFERENCES feed_posts(id) ON DELETE CASCADE,
+  path TEXT NOT NULL UNIQUE,
+  media TEXT NOT NULL CHECK (media IN ('image','video')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feed_att_post ON feed_attachments(post_id);
 `);
 
 // Migration: comments threads first shipped with entry+task subjects only.
@@ -205,6 +240,29 @@ try {
     `);
   }
 } catch (err) { console.error('[db] comments subject migration failed:', err); }
+
+// Migration: comments gained the 'post' subject for the household feed.
+// SQLite can't alter a CHECK, so copy the rows into a widened table.
+try {
+  const tc = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'").get();
+  if (tc && tc.sql && !tc.sql.includes("'post'")) {
+    db.exec(`
+      CREATE TABLE comments_new (
+        id TEXT PRIMARY KEY,
+        subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin','post')),
+        subject_id TEXT NOT NULL,
+        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO comments_new (id, subject, subject_id, author_id, body, created_at)
+        SELECT id, subject, subject_id, author_id, body, created_at FROM comments;
+      DROP TABLE comments;
+      ALTER TABLE comments_new RENAME TO comments;
+      CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
+    `);
+  }
+} catch (err) { console.error('[db] comments post-subject migration failed:', err); }
 
 // The starter catalog every Dominant gets (basic physical + demographic info).
 const DEFAULT_FIELD_LABELS = ['Full name', 'Date of birth', 'Hair color', 'Eye color'];

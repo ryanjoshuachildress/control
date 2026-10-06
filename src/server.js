@@ -16,6 +16,7 @@ const punishmentRoutes = require('./routes/punishments');
 const statsRoutes = require('./routes/stats');
 const profileRoutes = require('./routes/profiles');
 const commentRoutes = require('./routes/comments');
+const feedRoutes = require('./routes/feed');
 
 const app = express();
 app.disable('x-powered-by');
@@ -47,9 +48,12 @@ app.use('/api/punishments', punishmentRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/comments', commentRoutes);
+app.use('/api/feed', feedRoutes);
 
 // Evidence files — only the submitting sub or their Dom may view them.
-// Profile photos (prefix pf-, stored as profile_values) follow the same rule.
+// Profile photos (prefix pf-) follow the same rule, and feed attachments
+// (prefix fp-) are visible to exactly who can see the post itself: the
+// household's Dom, the post's author, or a targeted submissive.
 app.get('/uploads/:file', requireAuth, (req, res) => {
   if (!/^[\w.-]+$/.test(req.params.file)) return res.status(400).json({ error: 'Invalid path' });
   const row =
@@ -63,11 +67,21 @@ app.get('/uploads/:file', requireAuth, (req, res) => {
       `SELECT pv.sub_id, u.dom_id FROM profile_values pv
        JOIN profile_fields f ON f.id = pv.field_id AND f.kind = 'photo'
        JOIN users u ON u.id = pv.sub_id
-       WHERE pv.value = ?`).get(req.params.file);
+       WHERE pv.value = ?`).get(req.params.file) ||
+    db.prepare(
+      `SELECT p.id AS post_id, p.author_id, p.dom_id
+       FROM feed_attachments a JOIN feed_posts p ON p.id = a.post_id
+       WHERE a.path = ?`).get(req.params.file);
   if (!row) return res.status(404).json({ error: 'Not found' });
-  const allowed = req.user.role === 'sub'
-    ? req.user.id === row.sub_id
-    : req.user.role === 'dom' && req.user.id === row.dom_id;
+  const allowed = row.post_id
+    ? req.user.id === row.author_id
+      || (req.user.role === 'dom' && req.user.id === row.dom_id)
+      || (req.user.role === 'sub' && !!db.prepare(
+        'SELECT 1 AS ok FROM feed_post_targets WHERE post_id = ? AND sub_id = ?')
+          .get(row.post_id, req.user.id))
+    : req.user.role === 'sub'
+      ? req.user.id === row.sub_id
+      : req.user.role === 'dom' && req.user.id === row.dom_id;
   if (!allowed) return res.status(403).json({ error: 'Not allowed' });
   res.sendFile(path.join(DATA_DIR, 'uploads', req.params.file));
 });

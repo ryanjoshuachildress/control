@@ -47,4 +47,4 @@ async function send(to, subject, bodyHtml) {
   }
 }
 
-module.exports = { init, send, smtpEnabled: () => !!transporter };
+module.exports = { init, send, esc, smtpEnabled: () => !!transporter };
