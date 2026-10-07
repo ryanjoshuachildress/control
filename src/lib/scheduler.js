@@ -68,22 +68,25 @@ function checkWeeklyPerformance() {
       db.prepare('INSERT INTO performance_alerts (id, sub_id, period_key) VALUES (?, ?, ?)')
         .run(crypto.randomUUID(), sub.id, sundayKey);
 
+      const punId = crypto.randomUUID();
       db.prepare(`INSERT INTO punishments (id, dom_id, sub_id, title, description, completion_mode, source)
                   VALUES (?, ?, ?, ?, ?, 'checkoff', 'auto')`)
-        .run(crypto.randomUUID(), sub.dom_id, sub.id, punishTitle, desc);
+        .run(punId, sub.dom_id, sub.id, punishTitle, desc);
 
       if (sub.dom_notify) {
         mail.send(sub.dom_email,
           `${sub.name} under ${sub.weekly_punish_pct}% this week — punishment assigned`,
           `<p><strong>${sub.name}</strong> completed only <strong>${pct}%</strong> of daily tasks in the week ending ${sundayKey}
-           (${desc.replace('Daily-task compliance was ', 'compliance: ')}). Auto-punishment assigned: <strong>${punishTitle}</strong>.</p>`);
+           (${desc.replace('Daily-task compliance was ', 'compliance: ')}). Auto-punishment assigned: <strong>${punishTitle}</strong>.</p>
+           ${mail.viewLink(`sub/${sub.id}/punishments?focus=punishment:${punId}`, 'View their punishments')}`);
       }
       if (sub.sub_notify) {
         mail.send(
           (db.prepare('SELECT email FROM users WHERE id = ?').get(sub.id) || {}).email,
           `This week's task compliance was ${pct}% — punishment assigned`,
           `<p>Your daily-task compliance for the week ending ${sundayKey} was <strong>${pct}%</strong>, under your Dominant's required ${sub.weekly_punish_pct}%.
-           Punishment to complete within 24 hours: <strong>${punishTitle}</strong>.</p>`);
+           Punishment to complete within 24 hours: <strong>${punishTitle}</strong>.</p>
+           ${mail.viewLink(`today?focus=punishment:${punId}`, 'View the punishment')}`);
       }
     } catch (err) {
       console.error('[scheduler] weekly performance check failed for', sub.id, err);
@@ -159,7 +162,8 @@ function checkDeadlines() {
           `${t.sub_name} missed "${t.title}" (${period})`,
           `<p><strong>${t.sub_name}</strong> did not complete <strong>${t.title}</strong> before ${deadlineDesc}
            Required completion: ${need}.
-           ${t.auto_punish_title ? `<br>An auto-punishment was assigned for it: <strong>${t.auto_punish_title}</strong>.` : ''}</p>`
+           ${t.auto_punish_title ? `<br>An auto-punishment was assigned for it: <strong>${t.auto_punish_title}</strong>.` : ''}</p>
+           ${mail.viewLink(`sub/${t.sub_id}/tasks?focus=task:${t.id}`, 'View their tasks')}`
         );
       }
       if (t.sub_notify) {
@@ -167,7 +171,9 @@ function checkDeadlines() {
           (db.prepare('SELECT email FROM users WHERE id = ?').get(t.sub_id) || {}).email,
           `You missed "${t.title}" (${period})`,
           `<p>${deadlineDesc.charAt(0).toUpperCase() + deadlineDesc.slice(1)} passed without completion of <strong>${t.title}</strong>. Your Dom has been notified.
-           ${t.auto_punish_title ? `<br>Punishment to complete within 24 hours: <strong>${t.auto_punish_title}</strong>.</p>` : '</p>'}`
+           ${t.auto_punish_title ? `<br>Punishment to complete within 24 hours: <strong>${t.auto_punish_title}</strong>.` : ''}
+           </p>
+           ${mail.viewLink(`today?focus=task:${t.id}`, 'View the task')}`
         );
       }
     } catch (err) {
@@ -182,7 +188,7 @@ function checkDeadlines() {
 // A punishment left uncompleted 24 hours after assignment notifies the Dom once.
 function checkPunishmentLapses() {
   const stale = db.prepare(`
-    SELECT p.id, p.title, s.name AS sub_name, d.email AS dom_email, d.email_notifications AS dom_notify
+    SELECT p.id, p.title, p.sub_id, s.name AS sub_name, d.email AS dom_email, d.email_notifications AS dom_notify
     FROM punishments p
     JOIN users s ON s.id = p.sub_id
     JOIN users d ON d.id = p.dom_id
@@ -192,7 +198,8 @@ function checkPunishmentLapses() {
     db.prepare('UPDATE punishments SET lapse_notified = 1 WHERE id = ?').run(p.id);
     if (p.dom_notify) {
       mail.send(p.dom_email, `Punishment not completed within 24h: "${p.title}"`,
-        `<p><strong>${p.sub_name}</strong>'s punishment <strong>${p.title}</strong> (assigned 24+ hours ago) is still open.</p>`);
+        `<p><strong>${p.sub_name}</strong>'s punishment <strong>${p.title}</strong> (assigned 24+ hours ago) is still open.</p>
+         ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`);
     }
   }
 }

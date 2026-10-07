@@ -201,12 +201,14 @@ router.post('/', requireAuth, feedUpload.array('media', MULTER_MAX_FILES), (req,
   const subLine = (who) => mail.send(who,
     `New household post from ${authorName}`,
     `${excerpt || '<p>(photo/video post)</p>'}${attNote}
-     <p>Open Control to see it in the feed.</p>`);
+     <p>Open Control to see it in the feed.</p>
+     ${mail.viewLink(`feed?focus=post:${id}`, 'View the post')}`);
   const domLine = () => mail.send(
     db.prepare('SELECT email FROM users WHERE id = ?').get(req.user.dom_id)?.email,
     `New feed post from ${authorName}`,
     `${excerpt || '<p>(photo/video post)</p>'}${attNote}
-     <p>Open Control to see it in the feed.</p>`);
+     <p>Open Control to see it in the feed.</p>
+     ${mail.viewLink(`feed?focus=post:${id}`, 'View the post')}`);
 
   if (req.user.role === 'dom' && domId) {
     for (const t of db.prepare('SELECT sub_id FROM feed_post_targets WHERE post_id = ?').all(id)) {

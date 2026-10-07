@@ -54,7 +54,8 @@ function subTaskChangeMail(task, updates) {
   mail.send(sub.email, `Task changed: ${updates.title || task.title}`,
     `<p><strong>${esc(domName)}</strong> changed the task <strong>${esc(current.title)}</strong>:</p>
      <ul><li>${changes.join('</li><li>')}</li></ul>
-     <p>${deadlineLine(current, tz)}${current.active ? '' : ' It is currently paused, so the deadline is on hold.'}</p>`);
+     <p>${deadlineLine(current, tz)}${current.active ? '' : ' It is currently paused, so the deadline is on hold.'}</p>
+     ${mail.viewLink(`today?focus=task:${task.id}`, 'View the task')}`);
 }
 
 function normalizeDueDate(raw) {
@@ -131,8 +132,8 @@ router.post('/:id/complete', requireSub, (req, res) => {
       const dom = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'dom'").get(task.dom_id);
       if (dom && dom.email_notifications) {
         mail.send(dom.email, `${req.user.name} completed "${task.title}"`,
-          `<p><strong>${req.user.name}</strong> completed <strong>${task.title}</strong> (period ${periodKey})${method === 'evidence' ? ' with photo/video evidence' : ''}.
-           ${req.file ? `<br>View evidence in Control under the submissive’s task history.</p>` : '</p>'}`);
+          `<p><strong>${req.user.name}</strong> completed <strong>${task.title}</strong> (period ${periodKey})${method === 'evidence' ? ' with photo/video evidence' : ''} — view it in their task history.</p>
+           ${mail.viewLink(`sub/${task.sub_id}/tasks?focus=task:${task.id}`, 'View the task')}`);
       }
       res.json({ ok: true, task: { id: task.id, done: true, method, completed_at: new Date().toISOString() } });
     } catch (e) {
@@ -164,7 +165,8 @@ router.post('/', requireDom, (req, res) => {
       `<p><strong>${esc(req.user.name)}</strong> assigned you a ${frequency} task: <strong>${esc(String(title).trim().slice(0, 120))}</strong></p>
        <p>${due.value
          ? `Deadline: <strong>${esc(due.value)}</strong>, end of that day (midnight ${esc(sub.timezone)} time). This overrides the frequency deadline.`
-         : LABEL[frequency]}${completion_mode === 'evidence' ? ' — photo/video evidence required.' : ' — check it off when done.'}</p>`);
+         : LABEL[frequency]}${completion_mode === 'evidence' ? ' — photo/video evidence required.' : ' — check it off when done.'}</p>
+       ${mail.viewLink(`today?focus=task:${id}`, 'View the task')}`);
   }
   res.json({ ok: true, id });
 });
@@ -206,7 +208,8 @@ router.delete('/:id', requireDom, (req, res) => {
     mail.send(sub.email, `Task removed: ${task.title}`,
       `<p><strong>${esc(req.user.name)}</strong> removed the task <strong>${esc(task.title)}</strong>
        (was ${task.due_date ? `a one-off due ${esc(task.due_date)}` : esc(LABEL[task.frequency]).toLowerCase()}).
-       Nothing is owed for it anymore.</p>`);
+       Nothing is owed for it anymore.</p>
+       ${mail.viewLink('today', 'View your tasks')}`);
   }
   res.json({ ok: true });
 });

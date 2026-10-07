@@ -39,7 +39,8 @@ router.post('/', requireAuth, (req, res) => {
   db.prepare('UPDATE users SET dom_id = ? WHERE id = ?').run(dom.id, req.user.id);
   if (dom.email_notifications) {
     mail.send(dom.email, `${req.user.name} paired with you on Control`,
-      `<p><strong>${req.user.name}</strong>${req.user.title ? ` (${req.user.title})` : ''} has paired with you as your submissive.</p>`);
+      `<p><strong>${req.user.name}</strong>${req.user.title ? ` (${req.user.title})` : ''} has paired with you as your submissive.</p>
+       ${mail.viewLink('dash', 'View your dashboard')}`);
   }
   res.json({ ok: true, dom: { id: dom.id, name: dom.name, title: dom.title } });
 });

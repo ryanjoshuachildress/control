@@ -45,6 +45,22 @@ function checkinAudience(row) {
   return ids;
 }
 
+// Deep link where each recipient lands on the referenced thread. Dom recipients
+// view items through their submissive's pages; subs through their own.
+function threadPath(subject, row, role) {
+  const focus = `focus=${subject}:${row.id}`;
+  if (subject === 'task') return role === 'dom' ? `sub/${row.sub_id}/tasks?${focus}` : `today?${focus}`;
+  if (subject === 'punishment') return role === 'dom' ? `sub/${row.sub_id}/punishments?${focus}` : `today?${focus}`;
+  if (subject === 'checkin') return role === 'dom' ? `sub/${row.sub_id}/checkins?${focus}` : `today?${focus}`;
+  if (subject === 'post') return `feed?${focus}`;
+  // Journal entry: a Dom reads a sub-owned entry in that sub's journal view.
+  if (subject === 'entry') {
+    const owner = db.prepare('SELECT role FROM users WHERE id = ?').get(row.owner_id);
+    if (role === 'dom' && owner && owner.role === 'sub') return `sub/${row.owner_id}/journal?${focus}`;
+  }
+  return `journal?${focus}`;
+}
+
 // Resolves the commented item (or 404s) and the audience allowed into its
 // thread. Throws when the user is not part of the audience.
 function loadThread(req) {
@@ -114,12 +130,13 @@ router.post('/:subject/:subjectId', requireAuth, (req, res) => {
   const label = subjectLabel(subject, row);
   for (const uid of audience) {
     if (uid === req.user.id) continue;
-    const u = db.prepare('SELECT email, email_notifications FROM users WHERE id = ?').get(uid);
+    const u = db.prepare('SELECT email, email_notifications, role FROM users WHERE id = ?').get(uid);
     if (!u || !u.email_notifications) continue;
     mail.send(u.email, `New comment from ${authorName}`,
       `<p><strong>${esc(authorName)}</strong> commented on ${label}:</p>
        <p>“${esc(body.slice(0, 300))}${body.length > 300 ? '…' : ''}”</p>
-       <p>Reply in Control to keep the conversation going.</p>`);
+       <p>Reply in Control to keep the conversation going.</p>
+       ${mail.viewLink(threadPath(subject, row, u.role), 'View the conversation')}`);
   }
   res.json({ ok: true, id });
 });

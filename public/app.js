@@ -60,12 +60,49 @@ let tz = 'UTC';
 try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { /* keep UTC */ }
 
 /* ---------- router ---------- */
+// Email notifications deep-link like #/today?focus=task:<id>; consumed once
+// after the next render by applyFocus(), which runs at the end of shell().
+let pendingFocus = null;
+
+function applyFocus() {
+  const spec = pendingFocus;
+  pendingFocus = null;
+  if (!spec) return;
+  const colon = String(spec).indexOf(':');
+  if (colon === -1) return;
+  const subject = String(spec).slice(0, colon);
+  const id = String(spec).slice(colon + 1);
+  // Every referenced item renders a comments block keyed to its subject/id,
+  // so that double duty as the anchor for scrolling a link target into view.
+  const anchor = app.querySelector(
+    `.comments[data-comment-subject="${subject}"][data-comment-id="${id}"]`);
+  if (!anchor) return;
+  const item = anchor.closest('.item') || anchor.closest('.card');
+  if (item) {
+    item.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    item.classList.add('focus-flash');
+    setTimeout(() => item.classList.remove('focus-flash'), 4000);
+  }
+  // Open the thread so the referenced conversation is visible on arrival.
+  const list = anchor.querySelector('.comment-list');
+  if (list && list.hidden) {
+    loadComments(anchor).then(() => {
+      list.hidden = false;
+      anchor.querySelector('form').hidden = false;
+    });
+  }
+}
+
 function route() {
   if (!user) {
     api('/auth/me').then(d => { user = d.user; route(); }).catch(() => renderAuth());
     return;
   }
-  const parts = (location.hash || '').slice(1).split('/').filter(Boolean);
+  const raw = (location.hash || '').slice(1);
+  const qIdx = raw.indexOf('?');
+  const path = qIdx === -1 ? raw : raw.slice(0, qIdx);
+  pendingFocus = qIdx === -1 ? null : new URLSearchParams(raw.slice(qIdx)).get('focus');
+  const parts = path.split('/').filter(Boolean);
   const page = parts[0] || 'feed';
 
   if (user.role === 'dom') {
@@ -206,6 +243,7 @@ function shell(active, inner) {
     <div class="whoami"><b>${who}</b><button class="small ghost" data-action="logout">Log out</button></div>
   </div></header>
   <main class="wrap">${inner}</main>`;
+  applyFocus();
 }
 
 /* ---------- sub: today ---------- */

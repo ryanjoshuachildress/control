@@ -25,6 +25,13 @@ function esc(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Prominent button linking straight to the referenced screen. `path` is the
+// app's hash route (e.g. "today?focus=task:<id>") appended to BASE_URL, so a
+// click lands on the item itself, not just the app root.
+function viewLink(path, label) {
+  return `<p style="margin:20px 0 4px"><a style="background:#c58a9a;color:#21131a;padding:10px 18px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block" href="${baseUrl}/#/${path}">${esc(label || 'View in Control')}</a></p>`;
+}
+
 function wrap(title, bodyHtml) {
   return `<!doctype html><html><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#12121a;color:#e8e4ee;padding:24px">
   <div style="max-width:520px;margin:0 auto;background:#1b1b26;border:1px solid #2e2e3e;border-radius:12px;padding:24px">
@@ -47,4 +54,4 @@ async function send(to, subject, bodyHtml) {
   }
 }
 
-module.exports = { init, send, esc, smtpEnabled: () => !!transporter };
+module.exports = { init, send, esc, viewLink, smtpEnabled: () => !!transporter };

@@ -47,7 +47,8 @@ router.post('/:id/complete', requireSub, (req, res) => {
       if (dom && dom.email_notifications) {
         mail.send(dom.email, `${req.user.name} completed punishment "${p.title}"`,
           `<p><strong>${req.user.name}</strong> completed the punishment <strong>${p.title}</strong>
-           ${method === 'evidence' ? ' with photo/video evidence — view it under their punishment history.' : ''}</p>`);
+           ${method === 'evidence' ? ' with photo/video evidence — view it in their punishment history.' : ''}</p>
+           ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`);
       }
       res.json({ ok: true });
     } catch (e) {
@@ -73,7 +74,8 @@ router.post('/', requireDom, (req, res) => {
   if (sub.email_notifications) {
     mail.send(sub.email, `Punishment assigned: ${title}`,
       `<p><strong>${req.user.name}</strong> has assigned a punishment: <strong>${String(title).trim().slice(0, 120)}</strong>.
-       Complete it within 24 hours${completion_mode === 'evidence' ? ' with photo/video evidence' : ''}.</p>`);
+       Complete it within 24 hours${completion_mode === 'evidence' ? ' with photo/video evidence' : ''}.</p>
+       ${mail.viewLink(`today?focus=punishment:${id}`, 'View the punishment')}`);
   }
   res.json({ ok: true, id });
 });
@@ -86,7 +88,8 @@ router.delete('/:id', requireDom, (req, res) => {
   const sub = db.prepare('SELECT email, email_notifications FROM users WHERE id = ?').get(p.sub_id);
   if (sub && sub.email_notifications) {
     mail.send(sub.email, `Punishment cancelled: ${p.title}`,
-      `<p><strong>${req.user.name}</strong> has cancelled the punishment <strong>${p.title}</strong>. Nothing is owed for it anymore.</p>`);
+      `<p><strong>${req.user.name}</strong> has cancelled the punishment <strong>${p.title}</strong>. Nothing is owed for it anymore.</p>
+       ${mail.viewLink('today', 'View your tasks')}`);
   }
   res.json({ ok: true });
 });
