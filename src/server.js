@@ -86,7 +86,13 @@ app.get('/uploads/:file', requireAuth, (req, res) => {
   res.sendFile(path.join(DATA_DIR, 'uploads', req.params.file));
 });
 
-app.use(express.static(path.join(__dirname, '..', 'public')));
+// Frontend assets: browsers must revalidate on every load (ETag → cheap 304
+// when unchanged), so a redeploy is picked up by a plain refresh and nobody
+// keeps running a stale app.js. Without this, heuristic caching left users on
+// the old script until a manual hard-refresh (caught 2026-10-06).
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache')
+}));
 
 // JSON 404 + error handling for the API
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
