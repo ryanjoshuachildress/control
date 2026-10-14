@@ -10,7 +10,7 @@ const { requireAuth, assertDomOwnsSub, attachUser, interactionOn } = require('..
 const { feedUpload, mediaKind, MULTER_MAX_FILES, MAX_UPLOAD_MB } = require('../lib/uploads');
 const { resolveRefs } = require('../lib/immich');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

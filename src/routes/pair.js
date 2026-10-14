@@ -4,7 +4,7 @@ const db = require('../db');
 const mail = require('../lib/mail');
 const { requireAuth, assertDomOwnsSub, attachUser } = require('../lib/auth');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

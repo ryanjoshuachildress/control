@@ -1,5 +1,5 @@
-// End-to-end test for the household feed against a throwaway DATA_DIR.
-// Run: node scripts/test-feed.js
+// End-to-end test for the household feed against a throwaway PostgreSQL
+// database. Run: node scripts/test-feed.js
 // Boots the real server on a temp port and drives register→pair→posts→
 // targeting→submissions-stream→comments→deletes with plain fetch.
 
@@ -7,10 +7,11 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { createTestEnv } = require('./lib/pg-test-env');
 
 const PORT = 3212;
 const BASE = `http://127.0.0.1:${PORT}`;
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'control-feed-test-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'control-feed-test-')); // uploads only; data lives in PostgreSQL
 
 let failures = 0;
 const ok = (cond, label) => {
@@ -43,10 +44,13 @@ const feed = async (c) => (await j(await c('GET', '/api/feed'))).items;
 const countKind = (items, kind) => items.filter(i => i.kind === kind).length;
 
 (async () => {
+  let envDB, envDB2;
+  envDB = await createTestEnv('feed');
   const server = spawn(process.execPath, ['src/server.js'], {
     env: {
       ...process.env,
-      DATA_DIR: TMP,
+      DATA_DIR: TMP, // uploads dir; the data lives in the throwaway database
+      DATABASE_URL: envDB.databaseUrl,
       PORT: String(PORT),
       SESSION_SECRET: 'test-secret',
       SMTP_HOST: ''
@@ -307,8 +311,9 @@ const countKind = (items, kind) => items.filter(i => i.kind === kind).length;
     const PORT2 = 3213;
     const BASE2 = `http://127.0.0.1:${PORT2}`;
     const TMP2 = fs.mkdtempSync(path.join(os.tmpdir(), 'control-cap-test-'));
+    envDB2 = await createTestEnv('feedcap');
     const second = spawn(process.execPath, ['src/server.js'], {
-      env: { ...process.env, DATA_DIR: TMP2, PORT: String(PORT2), SESSION_SECRET: 'cap-test', SMTP_HOST: '', MAX_UPLOAD_MB: '1' },
+      env: { ...process.env, DATA_DIR: TMP2, DATABASE_URL: envDB2.databaseUrl, PORT: String(PORT2), SESSION_SECRET: 'cap-test', SMTP_HOST: '', MAX_UPLOAD_MB: '1' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     try {
@@ -335,6 +340,8 @@ const countKind = (items, kind) => items.filter(i => i.kind === kind).length;
     failures++;
   } finally {
     server.kill();
+    if (envDB) await envDB.cleanup();
+    if (envDB2) await envDB2.cleanup();
     if (log && failures) console.log('--- server log ---\n' + log.slice(-2000));
     try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
     process.exit(failures ? 1 : 0);

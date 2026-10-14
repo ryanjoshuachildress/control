@@ -7,7 +7,7 @@ const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib
 const { upload } = require('../lib/uploads');
 const { resolveRefs } = require('../lib/immich');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

@@ -8,7 +8,7 @@ const { UPLOAD_DIR } = require('../db');
 const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib/auth');
 const { resolveRefs } = require('../lib/immich');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

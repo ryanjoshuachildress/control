@@ -5,7 +5,10 @@
   "description": "Control — a private dynamic management app for Doms and subs",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node scripts/run-tests.js",
+    "migrate": "node scripts/migrate-sqlite-to-pg.js",
+    "build:web": "cd web && npm run build"
   },
   "engines": {
     "node": ">=20"

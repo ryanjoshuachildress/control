@@ -6,6 +6,7 @@ const db = require('./db');
 const { DATA_DIR } = require('./db');
 const mail = require('./lib/mail');
 const { requireAuth, attachUser, interactionOn } = require('./lib/auth');
+const safeRouter = require('./lib/router');
 const { startScheduler } = require('./lib/scheduler');
 
 const authRoutes = require('./routes/auth');
@@ -21,7 +22,7 @@ const feedRoutes = require('./routes/feed');
 const momentRoutes = require('./routes/moments');
 const immichRoutes = require('./routes/immich');
 
-const app = express();
+const app = safeRouter.app(express());
 app.disable('x-powered-by');
 app.set('trust proxy', true);
 

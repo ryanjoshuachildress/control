@@ -1,9 +1,11 @@
+let envDB;
 // End-to-end test for Moments + the household cross-submissive switch
 // against a throwaway DATA_DIR. Run: node scripts/test-moments.js
 // Boots the real server on a temp port and drives register→pair→create→
 // record-your-version→lock/unlock→tags→feed audiences with plain fetch.
 
 const { spawn } = require('child_process');
+const { createTestEnv } = require('./lib/pg-test-env');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -88,10 +90,12 @@ const V = (over = {}) => Object.assign({
 (async () => {
   await new Promise(r => mockImmich.listen(IMPORT, () => r()));
   await new Promise(r => setTimeout(r, 200));
+  envDB = await createTestEnv('moments');
   const server = spawn(process.execPath, ['src/server.js'], {
     env: {
       ...process.env,
-      DATA_DIR: TMP, PORT: String(PORT), SESSION_SECRET: 'test-secret', SMTP_HOST: '',
+      DATA_DIR: TMP, // uploads dir; data lives in the throwaway database
+      DATABASE_URL: envDB.databaseUrl, PORT: String(PORT), SESSION_SECRET: 'test-secret', SMTP_HOST: '',
       IMMICH_URL: `http://127.0.0.1:${IMPORT}`, IMMICH_KEY: 'keyA'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -364,14 +368,14 @@ const V = (over = {}) => Object.assign({
       r_originality: 4, r_hotness: 5, r_surprise: 3, r_connection: 5
     }));
     ok(ed1.ok === true, 'author edits their version');
-    let g1e = (await groups(sub1))[0];
+    const g1e = (await j(await sub1('GET', `/api/moments/${m1id}`))).group;
     ok(g1e.versions.find(v => v.author_id === sub1Id).summary.includes('edited'), 'the edit shows in the list');
     ok((await j(await sub1('PUT', `/api/moments/${m1id}/version`, V({ r_connection: null })))).status === 400, 'edit re-validates ratings');
     await sub2('PUT', `/api/moments/${m1id}/version`, {
       summary: 'sub2 edited their own', best_part: 'x', worst_part: 'y', again: 'yes',
       r_originality: 4, r_hotness: 4, r_surprise: 4, r_connection: 4
     });
-    let g2e = (await groups(sub2))[0];
+    const g2e = (await j(await sub2('GET', `/api/moments/${m1id}`))).group;
     ok(g2e.versions.find(v => v.mine).summary === 'sub2 edited their own', 'each author edits only their own version');
 
     console.log('--- attachment management on a version ---');
@@ -507,6 +511,7 @@ const V = (over = {}) => Object.assign({
     failures++;
   } finally {
     server.kill();
+    if (envDB) await envDB.cleanup();
     mockImmich.close(() => {});
     if (log && failures) console.log('--- server log ---\n' + log.slice(-2000));
     try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

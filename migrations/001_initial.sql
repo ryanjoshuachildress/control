@@ -131,6 +131,8 @@ CREATE TABLE punishments (
   evidence_path TEXT,
   note TEXT DEFAULT '',
   lapse_notified SMALLINT NOT NULL DEFAULT 0,
+  immich_asset_id TEXT,
+  immich_media TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
   completed_at TEXT
 );

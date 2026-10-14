@@ -10,7 +10,7 @@ const db = require('../db');
 const { requireAuth, attachUser, interactionOn } = require('../lib/auth');
 const { BASE, configured, keyPool, searchAssets, assetStream } = require('../lib/immich');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

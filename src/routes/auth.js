@@ -6,7 +6,7 @@ const mail = require('../lib/mail');
 const { seedDefaultFields } = require('../db');
 const { attachUser, startSession, requireAuth } = require('../lib/auth');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 // Attach the signed-in user (from session) to every request first.
 router.use(attachUser);

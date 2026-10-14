@@ -3,7 +3,7 @@ const db = require('../db');
 const time = require('../lib/time');
 const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib/auth');
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

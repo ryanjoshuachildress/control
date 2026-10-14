@@ -5,7 +5,7 @@ const mail = require('../lib/mail');
 const { requireAuth, attachUser, interactionOn } = require('../lib/auth');
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const router = express.Router();
+const router = require("../lib/router")();
 
 router.use(attachUser);
 

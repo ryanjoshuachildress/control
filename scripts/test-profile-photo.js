@@ -1,9 +1,11 @@
+let envDB;
 // End-to-end test for photo profile fields (About the submissive) against a
 // throwaway DATA_DIR. Run: node scripts/test-profile-photo.js
 // Boots the real server on a temp port, drives register→pair→photo upload→
 // exposure→serving→replace/cleanup with plain fetch.
 
 const { spawn } = require('child_process');
+const { createTestEnv } = require('./lib/pg-test-env');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -46,10 +48,12 @@ function client() {
 }
 
 (async () => {
+  envDB = await createTestEnv('photo');
   const server = spawn(process.execPath, ['src/server.js'], {
     env: {
       ...process.env,
-      DATA_DIR: TMP,
+      DATA_DIR: TMP, // uploads dir; data lives in the throwaway database
+      DATABASE_URL: envDB.databaseUrl,
       PORT: String(PORT),
       SESSION_SECRET: 'test-secret',
       // SMTP_HOST unset → emails are logged, not sent
@@ -184,6 +188,7 @@ function client() {
     failures++;
   } finally {
     server.kill();
+    if (envDB) await envDB.cleanup();
     if (log && failures) console.log('--- server log ---\n' + log.slice(-2000));
     try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
     process.exit(failures ? 1 : 0);

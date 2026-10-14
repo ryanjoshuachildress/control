@@ -1,9 +1,11 @@
+let envDB;
 // Headless visual check for the Moments tab: the sub is prompted to record
 // their version of a Dom-created moment, clicks real stars, submits, and the
 // Dom's version unlocks. Run: node scripts/check-moments-ui.js
 // (puppeteer-core driving the installed Edge; no browser download.)
 
 const { spawn } = require('child_process');
+const { createTestEnv } = require('./lib/pg-test-env');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -47,8 +49,9 @@ function client() {
 }
 
 (async () => {
+  envDB = await createTestEnv('momentsui');
   const server = spawn(process.execPath, ['src/server.js'], {
-    env: { ...process.env, DATA_DIR: TMP, PORT: String(PORT), SESSION_SECRET: 'ui-check', SMTP_HOST: '' },
+    env: { ...process.env, DATA_DIR: TMP, DATABASE_URL: envDB.databaseUrl, PORT: String(PORT), SESSION_SECRET: 'ui-check', SMTP_HOST: '' },
     stdio: 'ignore'
   });
   let browser;
@@ -178,6 +181,7 @@ function client() {
   } finally {
     if (browser) await browser.close().catch(() => {});
     server.kill();
+    if (envDB) await envDB.cleanup();
     try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
     process.exit(failures ? 1 : 0);
   }
