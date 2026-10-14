@@ -16,7 +16,7 @@ const LABEL = { daily: 'Due daily â€” deadline midnight', weekly: 'Due weekly â€
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const commentCount = (id) => db.get(
-  `SELECT COUNT(*) AS n FROM comments WHERE subject = 'task' AND subject_id = ?`, id);
+  `SELECT COUNT(*)::int AS n FROM comments WHERE subject = 'task' AND subject_id = ?`, id);
 
 // Deadlines in the sub's own time; a due date overrides the recurring cycle.
 function deadlineLine(t, tz) {

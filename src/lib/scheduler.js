@@ -54,7 +54,7 @@ async function checkWeeklyPerformance() {
           required++;
         }
         done += (await db.get(
-          `SELECT COUNT(*) AS n FROM completions WHERE task_id = ? AND period_key IN (${placeholders})`,
+          `SELECT COUNT(*)::int AS n FROM completions WHERE task_id = ? AND period_key IN (${placeholders})`,
           t.id, ...dayKeys)).n;
       }
       if (required === 0) continue;

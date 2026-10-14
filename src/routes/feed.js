@@ -16,7 +16,7 @@ router.use(attachUser);
 
 // commentCount('checkin', id) — same subquery pattern as tasks.js/journals.js
 const commentCount = (subject, id) => db.get(
-  `SELECT COUNT(*) AS n FROM comments WHERE subject = '${subject}' AND subject_id = ?`, id).then(r => r.n);
+  `SELECT COUNT(*)::int AS n FROM comments WHERE subject = '${subject}' AND subject_id = ?`, id).then(r => r.n);
 
 const AUTHOR_FIELDS = 'u.name AS author_name, u.title AS author_title, u.role AS author_role';
 const GET_TARGETS_SQL = `SELECT ft.sub_id, u.name AS sub_name FROM feed_post_targets ft
@@ -43,12 +43,12 @@ router.get('/', requireAuth, async (req, res) => {
   const posts = me.role === 'dom'
     ? await db.all(
         `SELECT p.*, ${AUTHOR_FIELDS},
-                (SELECT COUNT(*) FROM comments c WHERE c.subject = 'post' AND c.subject_id = p.id) AS comment_count
+                (SELECT COUNT(*)::int FROM comments c WHERE c.subject = 'post' AND c.subject_id = p.id) AS comment_count
          FROM feed_posts p JOIN users u ON u.id = p.author_id
          WHERE p.dom_id = ? ORDER BY p.created_at DESC LIMIT 100`, me.id)
     : await db.all(
         `SELECT p.*, ${AUTHOR_FIELDS},
-                (SELECT COUNT(*) FROM comments c WHERE c.subject = 'post' AND c.subject_id = p.id) AS comment_count
+                (SELECT COUNT(*)::int FROM comments c WHERE c.subject = 'post' AND c.subject_id = p.id) AS comment_count
          FROM feed_posts p JOIN users u ON u.id = p.author_id
          WHERE p.author_id = ?
             OR EXISTS (SELECT 1 FROM feed_post_targets ft WHERE ft.post_id = p.id AND ft.sub_id = ?)

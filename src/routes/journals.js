@@ -85,7 +85,7 @@ router.post('/entries', requireAuth, async (req, res) => {
 router.get('/entries', requireAuth, async (req, res) => {
   const entries = await db.all(
     `SELECT e.*, p.text AS prompt_text, p.kind AS prompt_kind,
-            (SELECT COUNT(*) FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
+            (SELECT COUNT(*)::int FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
      FROM entries e LEFT JOIN prompts p ON p.id = e.prompt_id
      WHERE e.owner_id = ? ORDER BY e.created_at DESC LIMIT 100`, req.user.id);
   if (req.user.role === 'dom') {
@@ -103,7 +103,7 @@ router.get('/entries/sub/:subId', requireDom, async (req, res) => {
   const sub = await assertDomOwnsSub(db, req.user.id, req.params.subId);
   const entries = await db.all(
     `SELECT e.*, p.text AS prompt_text, p.kind AS prompt_kind,
-            (SELECT COUNT(*) FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
+            (SELECT COUNT(*)::int FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
      FROM entries e LEFT JOIN prompts p ON p.id = e.prompt_id
      WHERE e.owner_id = ? ORDER BY e.created_at DESC LIMIT 100`, sub.id);
   res.json({ entries });
@@ -115,7 +115,7 @@ router.get('/entries/from-dom', requireSub, async (req, res) => {
   if (!req.user.dom_id) return res.json({ entries: [] });
   const entries = await db.all(
     `SELECT e.*, p.text AS prompt_text, p.kind AS prompt_kind,
-            (SELECT COUNT(*) FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
+            (SELECT COUNT(*)::int FROM comments c WHERE c.subject = 'entry' AND c.subject_id = e.id) AS comment_count
      FROM entries e LEFT JOIN prompts p ON p.id = e.prompt_id
      WHERE e.owner_id = ?
        AND EXISTS (SELECT 1 FROM entry_shares es WHERE es.entry_id = e.id AND es.sub_id = ?)

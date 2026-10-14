@@ -5,3 +5,4 @@ data/
 control.tgz
 web/node_modules/
 web/dist/
+.fixture-sqlite/

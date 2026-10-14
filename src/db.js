@@ -132,7 +132,7 @@ const DEFAULT_FIELD_LABELS = ['Full name', 'Date of birth', 'Hair color', 'Eye c
 // Dom registers.
 async function seedDefaultFields(domId) {
   try {
-    const row = await get('SELECT COUNT(*) AS n FROM profile_fields WHERE dom_id = ?', domId);
+    const row = await get('SELECT COUNT(*)::int AS n FROM profile_fields WHERE dom_id = ?', domId);
     if (row.n > 0) return;
     await transaction(async () => {
       for (let i = 0; i < DEFAULT_FIELD_LABELS.length; i++) {

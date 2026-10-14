@@ -200,7 +200,7 @@ async function shapeGroup(g, me) {
     needs_record: isSub && !recorded && shaped.some(v => v.locked && v.author_id === g.dom_id),
     can_delete: isDomView || g.created_by === me.id,
     comment_count: (await db.get(
-      "SELECT COUNT(*) AS n FROM comments WHERE subject = 'moment' AND subject_id = ?", g.id)).n,
+      "SELECT COUNT(*)::int AS n FROM comments WHERE subject = 'moment' AND subject_id = ?", g.id)).n,
     pending,
     versions: shaped
   };
@@ -589,7 +589,7 @@ router.post('/tags', requireAuth, async (req, res) => {
   if (existing) {
     return res.status(409).json({ error: 'That tag is already on the list', tag: existing });
   }
-  if ((await db.get('SELECT COUNT(*) AS n FROM tags WHERE dom_id = ?', domId)).n >= 500) {
+  if ((await db.get('SELECT COUNT(*)::int AS n FROM tags WHERE dom_id = ?', domId)).n >= 500) {
     return res.status(400).json({ error: 'Your tag list is full (500) — remove some first' });
   }
   const id = crypto.randomUUID();

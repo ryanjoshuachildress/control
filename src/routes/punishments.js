@@ -12,7 +12,7 @@ router.use(attachUser);
 
 const PUNISH_LABEL = { checkoff: 'checking it off', evidence: 'photo/video evidence' };
 const commentCount = (id) => db.get(
-  "SELECT COUNT(*) AS n FROM comments WHERE subject = 'punishment' AND subject_id = ?", id);
+  "SELECT COUNT(*)::int AS n FROM comments WHERE subject = 'punishment' AND subject_id = ?", id);
 const withCommentCount = async (p) => ({ ...p, comment_count: (await commentCount(p.id)).n });
 
 // ---------- submissive ----------

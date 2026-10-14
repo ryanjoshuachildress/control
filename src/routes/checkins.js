@@ -14,7 +14,7 @@ router.get('/today', requireSub, async (req, res) => {
   const checkin = await db.get('SELECT * FROM checkins WHERE sub_id = ? AND date = ?', req.user.id, date) || null;
   if (checkin) {
     checkin.comment_count = (await db.get(
-      "SELECT COUNT(*) AS n FROM comments WHERE subject = 'checkin' AND subject_id = ?", checkin.id)).n;
+      "SELECT COUNT(*)::int AS n FROM comments WHERE subject = 'checkin' AND subject_id = ?", checkin.id)).n;
   }
   res.json({ date, timezone: req.user.timezone, checkin });
 });
@@ -56,7 +56,7 @@ router.get('/mine', requireSub, async (req, res) => {
 router.get('/dom/:subId', requireDom, async (req, res) => {
   const sub = await assertDomOwnsSub(db, req.user.id, req.params.subId);
   const rows = await db.all(
-    `SELECT c.*, (SELECT COUNT(*) FROM comments cm WHERE cm.subject = 'checkin' AND cm.subject_id = c.id) AS comment_count
+    `SELECT c.*, (SELECT COUNT(*)::int FROM comments cm WHERE cm.subject = 'checkin' AND cm.subject_id = c.id) AS comment_count
      FROM checkins c WHERE c.sub_id = ? ORDER BY c.date DESC LIMIT 60`, sub.id);
   res.json({ sub: { id: sub.id, name: sub.name, title: sub.title }, checkins: rows });
 });

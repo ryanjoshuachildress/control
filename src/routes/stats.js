@@ -35,21 +35,21 @@ async function buildStats(subId, subTz, days) {
   const taskRates = [];
   for (const t of dailyTasks) {
     const comps = (await db.get(
-      'SELECT COUNT(*) c FROM completions WHERE task_id = ? AND period_key >= ?', t.id, sinceKey)).c;
+      'SELECT COUNT(*)::int c FROM completions WHERE task_id = ? AND period_key >= ?', t.id, sinceKey)).c;
     taskRates.push({ id: t.id, title: t.title, done: comps, expected: days, pct: Math.round((comps / days) * 100) });
   }
 
   // Simple totals across every frequency.
   const completionsTotal = (await db.get(
-    `SELECT COUNT(*) c FROM completions c JOIN tasks t ON t.id = c.task_id
+    `SELECT COUNT(*)::int c FROM completions c JOIN tasks t ON t.id = c.task_id
      WHERE t.sub_id = ? AND c.period_key >= ?`, subId, sinceKey)).c;
   const missedTotal = (await db.get(
-    `SELECT COUNT(*) c FROM missed_alerts a JOIN tasks t ON t.id = a.task_id
+    `SELECT COUNT(*)::int c FROM missed_alerts a JOIN tasks t ON t.id = a.task_id
      WHERE t.sub_id = ? AND a.period_key >= ?`, subId, sinceKey)).c;
   const punishmentsDone = (await db.get(
-    "SELECT COUNT(*) c FROM punishments WHERE sub_id = ? AND status = 'completed'", subId)).c;
+    "SELECT COUNT(*)::int c FROM punishments WHERE sub_id = ? AND status = 'completed'", subId)).c;
   const punishmentsOpen = (await db.get(
-    "SELECT COUNT(*) c FROM punishments WHERE sub_id = ? AND status = 'open'", subId)).c;
+    "SELECT COUNT(*)::int c FROM punishments WHERE sub_id = ? AND status = 'open'", subId)).c;
 
   const inRange = checkins.length ? checkins : [];
   const avg = (arr, f) => arr.length ? Math.round((arr.reduce((s, r) => s + f(r), 0) / arr.length) * 10) / 10 : null;

@@ -118,6 +118,23 @@ CREATE TABLE entries (
 );
 CREATE INDEX idx_entries_owner ON entries(owner_id, created_at DESC);
 
+CREATE TABLE punishments (
+  id TEXT PRIMARY KEY,
+  dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  completion_mode TEXT NOT NULL DEFAULT 'checkoff' CHECK (completion_mode IN ('checkoff','evidence')),
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  auto_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','completed','cancelled')),
+  evidence_path TEXT,
+  note TEXT DEFAULT '',
+  lapse_notified SMALLINT NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+  completed_at TEXT
+);
+
 -- Per-submissive sharing of Dom journal entries (replaces the shared_with_sub
 -- broadcast flag, which showed a shared entry to every paired submissive).
 CREATE TABLE entry_shares (
