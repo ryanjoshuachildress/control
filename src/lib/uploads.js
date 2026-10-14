@@ -32,9 +32,11 @@ const makeUpload = (prefix) => multer({
 });
 
 // Upload instances are cheap; the prefix keeps files identifiable in uploads/
-// (ev- = task/punishment evidence, fp- = feed post attachments).
+// (ev- = task/punishment evidence, fp- = feed post attachments,
+//  mt- = moment version attachments).
 const upload = makeUpload('ev');
 const feedUpload = makeUpload('fp');
+const momentUpload = makeUpload('mt');
 const MULTER_MAX_FILES = 10;
 
-module.exports = { upload, feedUpload, ALLOWED_EXT, mediaKind, MULTER_MAX_FILES, MAX_UPLOAD_MB };
+module.exports = { upload, feedUpload, momentUpload, ALLOWED_EXT, mediaKind, MULTER_MAX_FILES, MAX_UPLOAD_MB };

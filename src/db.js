@@ -1,323 +1,146 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const { Pool } = require('pg');
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, 'control.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not set — Control stores its data in PostgreSQL '
+    + '(e.g. postgres://control:<password>@db:5432/control)');
+}
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('dom','sub')),
-  title TEXT NOT NULL DEFAULT '',
-  timezone TEXT NOT NULL DEFAULT 'UTC',
-  invite_code TEXT UNIQUE,
-  dom_id TEXT REFERENCES users(id),
-  email_notifications INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+// Pool of PostgreSQL clients shared by every request. Call sites elsewhere use
+// the same statement API shape the SQLite code had (get/all/run/transaction),
+// just awaited now.
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+pool.on('error', (err) => console.error('[db] idle client error:', err));
 
-CREATE TABLE IF NOT EXISTS tasks (
-  id TEXT PRIMARY KEY,
-  dom_id TEXT NOT NULL REFERENCES users(id),
-  sub_id TEXT NOT NULL REFERENCES users(id),
-  title TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  frequency TEXT NOT NULL CHECK (frequency IN ('daily','weekly','monthly')),
-  completion_mode TEXT NOT NULL DEFAULT 'checkoff' CHECK (completion_mode IN ('checkoff','evidence')),
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+// A transaction body runs inside AsyncLocalStorage scope of its own client, so
+// the get/all/run calls made anywhere in the callback — including nested
+// helpers — automatically land on that client instead of the pool. This keeps
+// two concurrent requests from ever interleaving into each other's transaction.
+const txContext = new AsyncLocalStorage();
+const client = () => txContext.getStore() || pool;
 
--- One completion row per task per period (daily date / weekly Sunday / monthly YYYY-MM)
-CREATE TABLE IF NOT EXISTS completions (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  period_key TEXT NOT NULL,
-  method TEXT NOT NULL,
-  evidence_path TEXT,
-  note TEXT DEFAULT '',
-  completed_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (task_id, period_key)
-);
-
--- Prevents duplicate "missed deadline" emails for the same task/period
-CREATE TABLE IF NOT EXISTS missed_alerts (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  period_key TEXT NOT NULL,
-  sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (task_id, period_key)
-);
-
-CREATE TABLE IF NOT EXISTS checkins (
-  id TEXT PRIMARY KEY,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  date TEXT NOT NULL,
-  mood INTEGER NOT NULL,
-  day_rating INTEGER NOT NULL,
-  best_part TEXT DEFAULT '',
-  worst_part TEXT DEFAULT '',
-  sexual_notes TEXT DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (sub_id, date)
-);
-
-CREATE TABLE IF NOT EXISTS prompts (
-  id TEXT PRIMARY KEY,
-  dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('daily','weekly')),
-  text TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS entries (
-  id TEXT PRIMARY KEY,
-  prompt_id TEXT REFERENCES prompts(id) ON DELETE SET NULL,
-  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  body TEXT NOT NULL,
-  shared_with_sub INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_sub_active ON tasks(sub_id, active);
-CREATE INDEX IF NOT EXISTS idx_checkins_sub ON checkins(sub_id, date DESC);
-CREATE INDEX IF NOT EXISTS idx_entries_owner ON entries(owner_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_prompts_sub ON prompts(sub_id, active);
-
-CREATE TABLE IF NOT EXISTS punishments (
-  id TEXT PRIMARY KEY,
-  dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  completion_mode TEXT NOT NULL DEFAULT 'checkoff' CHECK (completion_mode IN ('checkoff','evidence')),
-  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
-  auto_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','completed','cancelled')),
-  evidence_path TEXT,
-  note TEXT DEFAULT '',
-  lapse_notified INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at TEXT
-);
-
--- Per-submissive sharing of Dom journal entries (replaces the shared_with_sub
--- broadcast flag, which showed a shared entry to every paired submissive).
-CREATE TABLE IF NOT EXISTS entry_shares (
-  entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  shared_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (entry_id, sub_id)
-);
-
-CREATE TABLE IF NOT EXISTS password_resets (
-  token_hash TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- One weekly-compliance evaluation per sub per week (prevents repeat punishes)
-CREATE TABLE IF NOT EXISTS performance_alerts (
-  id TEXT PRIMARY KEY,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  period_key TEXT NOT NULL,
-  sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (sub_id, period_key)
-);
-
--- "About the submissive" profile. The Dom owns the field catalog: adding a
--- field adds it to every paired submissive's profile. Values are
--- per-submissive and only the Dom can write them; a submissive sees a field
--- only if the Dom has exposed it to them specifically (profile_exposure).
-CREATE TABLE IF NOT EXISTS profile_fields (
-  id TEXT PRIMARY KEY,
-  dom_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  label TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT 'text' CHECK (kind IN ('text','multiline','photo')),
-  multiline INTEGER NOT NULL DEFAULT 0,
-  position INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS profile_values (
-  id TEXT PRIMARY KEY,
-  field_id TEXT NOT NULL REFERENCES profile_fields(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  value TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (field_id, sub_id)
-);
-
-CREATE TABLE IF NOT EXISTS profile_exposure (
-  field_id TEXT NOT NULL REFERENCES profile_fields(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  shown_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (field_id, sub_id)
-);
-
--- Two-way comment threads on journal entries, tasks, punishments and
--- check-ins, between a Dom and the submissive(s) who can already see the item.
-CREATE TABLE IF NOT EXISTS comments (
-  id TEXT PRIMARY KEY,
-  subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin')),
-  subject_id TEXT NOT NULL,
-  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
-
--- Household feed. dom_id = the household's Dominant user id (the author
--- themself for dom posts, the author's dom_id for sub posts, NULL for an
--- unpaired sub) so the Dom feed is one indexed filter over the whole dynamic.
--- Sub posts are visible to their Dom only. Dom posts are visible only to the
--- submissives listed in feed_post_targets, written at creation time — a sub
--- paired later does not see older "everyone" posts.
-CREATE TABLE IF NOT EXISTS feed_posts (
-  id TEXT PRIMARY KEY,
-  dom_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_feed_posts_dom ON feed_posts(dom_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_feed_posts_author ON feed_posts(author_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS feed_post_targets (
-  post_id TEXT NOT NULL REFERENCES feed_posts(id) ON DELETE CASCADE,
-  sub_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (post_id, sub_id)
-);
-CREATE INDEX IF NOT EXISTS idx_feed_targets_sub ON feed_post_targets(sub_id);
-
--- Photos/videos on feed posts. Files live in uploads/ named fp-*; path is the
--- uploads filename, media picks the <img> vs <video> rendering branch.
-CREATE TABLE IF NOT EXISTS feed_attachments (
-  id TEXT PRIMARY KEY,
-  post_id TEXT NOT NULL REFERENCES feed_posts(id) ON DELETE CASCADE,
-  path TEXT NOT NULL UNIQUE,
-  media TEXT NOT NULL CHECK (media IN ('image','video')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_feed_att_post ON feed_attachments(post_id);
-`);
-
-// Migration: comments threads first shipped with entry+task subjects only.
-// SQLite can't alter a CHECK, so copy the rows into a widened table.
-try {
-  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'").get();
-  if (t && t.sql && !t.sql.includes("'punishment'")) {
-    db.exec(`
-      CREATE TABLE comments_new (
-        id TEXT PRIMARY KEY,
-        subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin')),
-        subject_id TEXT NOT NULL,
-        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        body TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      INSERT INTO comments_new (id, subject, subject_id, author_id, body, created_at)
-        SELECT id, subject, subject_id, author_id, body, created_at FROM comments;
-      DROP TABLE comments;
-      ALTER TABLE comments_new RENAME TO comments;
-      CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
-    `);
+// SQLite placeholders were `?`, PostgreSQL wants `$1..$n`. Call sites keep
+// writing `?` so the ported SQL reads unchanged; this rewrites at runtime.
+// Apostrophes inside comments or an unbalanced string literal would silently
+// corrupt the numbering, so the scanner skips `--`/`/* */` comments and both
+// of those conditions throw instead of guessing.
+function toPg(sql) {
+  if (!sql.includes('?')) return sql;
+  let out = '';
+  let n = 0;
+  let inStr = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (inLine) {
+      out += ch;
+      if (ch === '\n') inLine = false;
+      continue;
+    }
+    if (inBlock) {
+      out += ch;
+      if (ch === '*' && next === '/') { out += next; i++; inBlock = false; }
+      continue;
+    }
+    if (inStr) {
+      out += ch;
+      if (ch === "'") {
+        if (next === "'") { out += next; i++; } // escaped ''
+        else inStr = false;
+      }
+      continue;
+    }
+    if (ch === '-' && next === '-') { inLine = true; out += ch; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; out += ch; continue; }
+    if (ch === "'") { inStr = true; out += ch; continue; }
+    if (ch === '?') out += '$' + (++n);
+    else out += ch;
   }
-} catch (err) { console.error('[db] comments subject migration failed:', err); }
+  if (inStr) throw new Error('Unterminated string literal in SQL: ' + sql.slice(0, 80));
+  return out;
+}
 
-// Migration: comments gained the 'post' subject for the household feed.
-// SQLite can't alter a CHECK, so copy the rows into a widened table.
-try {
-  const tc = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'").get();
-  if (tc && tc.sql && !tc.sql.includes("'post'")) {
-    db.exec(`
-      CREATE TABLE comments_new (
-        id TEXT PRIMARY KEY,
-        subject TEXT NOT NULL CHECK (subject IN ('entry','task','punishment','checkin','post')),
-        subject_id TEXT NOT NULL,
-        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        body TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      INSERT INTO comments_new (id, subject, subject_id, author_id, body, created_at)
-        SELECT id, subject, subject_id, author_id, body, created_at FROM comments;
-      DROP TABLE comments;
-      ALTER TABLE comments_new RENAME TO comments;
-      CREATE INDEX IF NOT EXISTS idx_comments_subject ON comments(subject, subject_id, created_at);
-    `);
+async function get(sql, ...params) {
+  const res = await client().query(toPg(sql), params);
+  return res.rows[0];
+}
+
+async function all(sql, ...params) {
+  const res = await client().query(toPg(sql), params);
+  return res.rows;
+}
+
+// Returns { changes: n } to mirror better-sqlite3's run() result.
+async function run(sql, ...params) {
+  const res = await client().query(toPg(sql), params);
+  return { changes: res.rowCount };
+}
+
+async function transaction(fn) {
+  if (txContext.getStore()) throw new Error('Nested transactions are not supported');
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const result = await txContext.run(c, fn);
+    await c.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await c.query('ROLLBACK'); } catch { /* connection may be dead already */ }
+    throw err;
+  } finally {
+    c.release();
   }
-} catch (err) { console.error('[db] comments post-subject migration failed:', err); }
+}
+
+// Versioned migrations: numbered .sql files in migrations/, applied once each
+// inside a transaction at startup. Fresh installs get the current schema in
+// one file; the SQLite → PostgreSQL data import (scripts/migrate-sqlite-to-pg.js)
+// runs the same runner first so both paths share one initial DDL.
+const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
+
+async function migrate() {
+  await run(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  for (const f of files) {
+    const seen = await get('SELECT 1 AS ok FROM schema_migrations WHERE name = ?', f);
+    if (seen) continue;
+    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8');
+    await transaction(async () => {
+      await run(sql);
+      await run('INSERT INTO schema_migrations (name) VALUES (?)', f);
+    });
+    console.log(`[db] applied migration ${f}`);
+  }
+}
 
 // The starter catalog every Dominant gets (basic physical + demographic info).
 const DEFAULT_FIELD_LABELS = ['Full name', 'Date of birth', 'Hair color', 'Eye color'];
 
 // Gives a Dom the starter fields if their catalog is empty. Called when a new
-// Dom registers, and during the one-time migration for Doms who predate these
-// tables so an empty catalog never leaves the page blank.
-function seedDefaultFields(domId) {
+// Dom registers.
+async function seedDefaultFields(domId) {
   try {
-    if (db.prepare('SELECT COUNT(*) AS n FROM profile_fields WHERE dom_id = ?').get(domId).n > 0) return;
-    const ins = db.prepare('INSERT INTO profile_fields (id, dom_id, label, position) VALUES (?, ?, ?, ?)');
-    db.transaction(() => {
-      DEFAULT_FIELD_LABELS.forEach((label, i) => ins.run(crypto.randomUUID(), domId, label, i));
-    })();
+    const row = await get('SELECT COUNT(*) AS n FROM profile_fields WHERE dom_id = ?', domId);
+    if (row.n > 0) return;
+    await transaction(async () => {
+      for (let i = 0; i < DEFAULT_FIELD_LABELS.length; i++) {
+        await run('INSERT INTO profile_fields (id, dom_id, label, position) VALUES (?, ?, ?, ?)',
+          crypto.randomUUID(), domId, DEFAULT_FIELD_LABELS[i], i);
+      }
+    });
   } catch (err) { console.error('[db] profile field seed failed:', err); }
 }
 
-// One-time migration: Doms who registered before these tables existed.
-try {
-  const doms = db.prepare("SELECT id FROM users WHERE role = 'dom'").all();
-  if (doms.length && db.prepare('SELECT COUNT(*) AS n FROM profile_fields').get().n === 0) {
-    db.transaction(() => { for (const d of doms) seedDefaultFields(d.id); })();
-  }
-} catch (err) { console.error('[db] profile field migration failed:', err); }
-
-// Migrations for databases created before punishments / password reset / auto-punish.
-function addColumn(table, column, def) {
-  try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`); } catch { /* column exists */ }
-}
-addColumn('tasks', 'auto_punish_title', "TEXT NOT NULL DEFAULT ''");
-addColumn('tasks', 'due_date', 'TEXT');
-addColumn('users', 'pw_version', 'INTEGER NOT NULL DEFAULT 0');
-addColumn('users', 'weekly_punish_title', "TEXT NOT NULL DEFAULT ''");
-addColumn('users', 'weekly_punish_pct', 'INTEGER');
-// profile field "kind" (text/multiline/photo) — carried over from the old multiline flag
-addColumn('profile_fields', 'kind', "TEXT NOT NULL DEFAULT 'text'");
-try {
-  db.prepare("UPDATE profile_fields SET kind = 'multiline' WHERE multiline = 1 AND kind = 'text'").run();
-} catch (err) { console.error('[db] profile field kind migration failed:', err); }
-
-// Migration: carry every already-shared entry's visibility over, per submissive,
-// then retire the broadcast flag. Only existing rows are touched; the flag stays 0.
-try {
-  if (db.prepare('SELECT COUNT(*) AS n FROM entries WHERE shared_with_sub = 1').get().n > 0) {
-    const shared = db.prepare('SELECT id, owner_id FROM entries WHERE shared_with_sub = 1').all();
-    const subsOf = db.prepare("SELECT id FROM users WHERE dom_id = ? AND role = 'sub'");
-    const addShare = db.prepare('INSERT OR IGNORE INTO entry_shares (entry_id, sub_id) VALUES (?, ?)');
-    db.transaction(() => {
-      for (const e of shared) for (const s of subsOf.all(e.owner_id)) addShare.run(e.id, s.id);
-      db.prepare('UPDATE entries SET shared_with_sub = 0 WHERE shared_with_sub = 1').run();
-    })();
-  }
-} catch (err) { console.error('[db] entry_shares migration failed:', err); }
-
-module.exports = db;
-module.exports.DATA_DIR = DATA_DIR;
-module.exports.UPLOAD_DIR = UPLOAD_DIR;
-module.exports.seedDefaultFields = seedDefaultFields;
+module.exports = { get, all, run, transaction, migrate, seedDefaultFields, DATA_DIR, UPLOAD_DIR };

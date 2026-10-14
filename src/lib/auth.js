@@ -11,9 +11,9 @@ function startSession(req, userId, pwver) {
 
 // Attaches the signed-in user to every request; invalidates sessions
 // minted before the latest password change (pw_version bump).
-function attachUser(req, res, next) {
+async function attachUser(req, res, next) {
   if (req.session && req.session.userId) {
-    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
+    const u = await db.get('SELECT * FROM users WHERE id = ?', req.session.userId);
     if (!u) {
       req.session = null;
     } else if ((req.session.pwver ?? -1) === u.pw_version) {
@@ -42,9 +42,11 @@ function requireSub(req, res, next) {
   next();
 }
 
-function assertDomOwnsSub(db, domId, subId) {
-  const sub = db.prepare('SELECT id, name, title, timezone, email, weekly_punish_title, weekly_punish_pct FROM users WHERE id = ? AND dom_id = ? AND role = ?')
-    .get(subId, domId, 'sub');
+// First argument kept for call-site compatibility with the SQLite code (its
+// better-sqlite3 handle); the helpers module is required directly here.
+async function assertDomOwnsSub(_db, domId, subId) {
+  const sub = await db.get('SELECT id, name, title, timezone, email, weekly_punish_title, weekly_punish_pct FROM users WHERE id = ? AND dom_id = ? AND role = ?',
+    subId, domId, 'sub');
   if (!sub) {
     const err = new Error('Submissive not found in your dynamic');
     err.status = 404;
@@ -53,4 +55,14 @@ function assertDomOwnsSub(db, domId, subId) {
   return sub;
 }
 
-module.exports = { attachUser, startSession, requireAuth, requireDom, requireSub, assertDomOwnsSub };
+// Household cross-submissive master switch (allow_sub_interaction on the
+// Dom's row). Off — the default — keeps every submissive sandboxed from every
+// other; on lets submissives in the same dynamic see each other's
+// household-wide feed posts and Moment versions.
+async function interactionOn(domId) {
+  if (!domId) return false;
+  const row = await db.get('SELECT allow_sub_interaction AS v FROM users WHERE id = ?', domId);
+  return !!row && !!row.v;
+}
+
+module.exports = { attachUser, startSession, requireAuth, requireDom, requireSub, assertDomOwnsSub, interactionOn };

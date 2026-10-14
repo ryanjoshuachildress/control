@@ -12,9 +12,9 @@ function fmtPeriod(frequency, key) {
 
 // Weekly compliance: when a sub's week closes at Sunday midnight, check their
 // daily-task completion rate; under the Dom's threshold, auto-assign once.
-function checkWeeklyPerformance() {
+async function checkWeeklyPerformance() {
   const now = new Date();
-  const subs = db.prepare(`
+  const subs = await db.all(`
     SELECT s.id, s.name, s.timezone AS tz, s.created_at, s.email_notifications AS sub_notify,
            s.weekly_punish_title, s.weekly_punish_pct,
            d.id AS dom_id, d.email AS dom_email, d.email_notifications AS dom_notify
@@ -22,7 +22,7 @@ function checkWeeklyPerformance() {
     WHERE s.dom_id IS NOT NULL
       AND s.weekly_punish_title != ''
       AND s.weekly_punish_pct IS NOT NULL AND s.weekly_punish_pct > 0
-  `).all();
+  `);
 
   for (const sub of subs) {
     try {
@@ -34,17 +34,15 @@ function checkWeeklyPerformance() {
       if (!created || created.getTime() >= deadline.getTime()) continue;
 
       // Evaluate once per week.
-      if (db.prepare('SELECT id FROM performance_alerts WHERE sub_id = ? AND period_key = ?').get(sub.id, sunday)) continue;
+      if (await db.get('SELECT id FROM performance_alerts WHERE sub_id = ? AND period_key = ?', sub.id, sunday)) continue;
 
       const sundayKey = sunday;
       const dayKeys = []; // Monday..Sunday of that week
       for (let i = 6; i >= 0; i--) dayKeys.push(time.shiftDateKey(sundayKey, -i));
       const placeholders = dayKeys.map(() => '?').join(',');
 
-      const dailyTasks = db.prepare(
-        `SELECT id, created_at FROM tasks WHERE sub_id = ? AND frequency = 'daily' AND active = 1`).all(sub.id);
-      const getComp = db.prepare(
-        `SELECT COUNT(*) AS n FROM completions WHERE task_id = ? AND period_key IN (${placeholders})`);
+      const dailyTasks = await db.all(
+        `SELECT id, created_at FROM tasks WHERE sub_id = ? AND frequency = 'daily' AND active = 1`, sub.id);
 
       let required = 0, done = 0;
       for (const t of dailyTasks) {
@@ -55,7 +53,9 @@ function checkWeeklyPerformance() {
           if (!createdT || createdT >= dd) continue;
           required++;
         }
-        done += getComp.get(t.id, ...dayKeys).n;
+        done += (await db.get(
+          `SELECT COUNT(*) AS n FROM completions WHERE task_id = ? AND period_key IN (${placeholders})`,
+          t.id, ...dayKeys)).n;
       }
       if (required === 0) continue;
 
@@ -65,13 +65,13 @@ function checkWeeklyPerformance() {
       const desc = `Daily-task compliance was ${pct}% (${done} of ${required} possible completions) for the week ending ${sundayKey} — under the ${sub.weekly_punish_pct}% threshold.`;
       const punishTitle = String(sub.weekly_punish_title).trim().slice(0, 120);
 
-      db.prepare('INSERT INTO performance_alerts (id, sub_id, period_key) VALUES (?, ?, ?)')
-        .run(crypto.randomUUID(), sub.id, sundayKey);
+      await db.run('INSERT INTO performance_alerts (id, sub_id, period_key) VALUES (?, ?, ?)',
+        crypto.randomUUID(), sub.id, sundayKey);
 
       const punId = crypto.randomUUID();
-      db.prepare(`INSERT INTO punishments (id, dom_id, sub_id, title, description, completion_mode, source)
-                  VALUES (?, ?, ?, ?, ?, 'checkoff', 'auto')`)
-        .run(punId, sub.dom_id, sub.id, punishTitle, desc);
+      await db.run(`INSERT INTO punishments (id, dom_id, sub_id, title, description, completion_mode, source)
+                  VALUES (?, ?, ?, ?, ?, 'checkoff', 'auto')`,
+        punId, sub.dom_id, sub.id, punishTitle, desc);
 
       if (sub.dom_notify) {
         mail.send(sub.dom_email,
@@ -82,7 +82,7 @@ function checkWeeklyPerformance() {
       }
       if (sub.sub_notify) {
         mail.send(
-          (db.prepare('SELECT email FROM users WHERE id = ?').get(sub.id) || {}).email,
+          ((await db.get('SELECT email FROM users WHERE id = ?', sub.id)) || {}).email,
           `This week's task compliance was ${pct}% — punishment assigned`,
           `<p>Your daily-task compliance for the week ending ${sundayKey} was <strong>${pct}%</strong>, under your Dominant's required ${sub.weekly_punish_pct}%.
            Punishment to complete within 24 hours: <strong>${punishTitle}</strong>.</p>
@@ -94,9 +94,9 @@ function checkWeeklyPerformance() {
   }
 }
 
-function checkDeadlines() {
+async function checkDeadlines() {
   const now = new Date();
-  const tasks = db.prepare(`
+  const tasks = await db.all(`
     SELECT t.id, t.title, t.frequency, t.completion_mode, t.due_date, t.created_at,
            s.id AS sub_id, s.name AS sub_name, s.title AS sub_title, s.email_notifications AS sub_notify,
            d.email AS dom_email, d.id AS dom_id, d.email_notifications AS dom_notify,
@@ -105,10 +105,7 @@ function checkDeadlines() {
     JOIN users s ON s.id = t.sub_id
     JOIN users d ON d.id = t.dom_id
     WHERE t.active = 1
-  `).all();
-
-  const getMissed = db.prepare('SELECT id FROM missed_alerts WHERE task_id = ? AND period_key = ?');
-  const insertMissed = db.prepare('INSERT INTO missed_alerts (id, task_id, period_key) VALUES (?, ?, ?)');
+  `);
 
   for (const t of tasks) {
     try {
@@ -128,11 +125,11 @@ function checkDeadlines() {
       const created = time.parseSqliteTimestamp(t.created_at);
       if (!created || created.getTime() >= deadline.getTime()) continue;
 
-      const done = db.prepare('SELECT id FROM completions WHERE task_id = ? AND period_key = ?').get(t.id, key);
+      const done = await db.get('SELECT id FROM completions WHERE task_id = ? AND period_key = ?', t.id, key);
       if (done) continue;
 
       // Alert once per missed period (server downtime catch-up included).
-      const existing = getMissed.get(t.id, key);
+      const existing = await db.get('SELECT id FROM missed_alerts WHERE task_id = ? AND period_key = ?', t.id, key);
       if (existing) continue;
 
       // Dedupe key is recorded last so a failure above is retried next cycle.
@@ -146,15 +143,16 @@ function checkDeadlines() {
 
       // Auto-assigned punishment, if the Dom configured one for this task.
       if (t.auto_punish_title && String(t.auto_punish_title).trim()) {
-        db.prepare(`INSERT INTO punishments (id, dom_id, sub_id, title, description, completion_mode, source, auto_task_id)
-                    VALUES (?, ?, ?, ?, '', 'checkoff', 'auto', ?)`)
-          .run(crypto.randomUUID(), t.dom_id, t.sub_id, String(t.auto_punish_title).trim().slice(0, 120), t.id);
+        await db.run(`INSERT INTO punishments (id, dom_id, sub_id, title, description, completion_mode, source, auto_task_id)
+                    VALUES (?, ?, ?, ?, '', 'checkoff', 'auto', ?)`,
+          crypto.randomUUID(), t.dom_id, t.sub_id, String(t.auto_punish_title).trim().slice(0, 120), t.id);
       }
 
-      insertMissed.run(crypto.randomUUID(), t.id, key);
+      await db.run('INSERT INTO missed_alerts (id, task_id, period_key) VALUES (?, ?, ?)',
+        crypto.randomUUID(), t.id, key);
 
       // A one-off (due-date) task is now resolved either way — retire it.
-      if (t.due_date) db.prepare('UPDATE tasks SET active = 0 WHERE id = ?').run(t.id);
+      if (t.due_date) await db.run('UPDATE tasks SET active = 0 WHERE id = ?', t.id);
 
       if (t.dom_notify) {
         mail.send(
@@ -168,7 +166,7 @@ function checkDeadlines() {
       }
       if (t.sub_notify) {
         mail.send(
-          (db.prepare('SELECT email FROM users WHERE id = ?').get(t.sub_id) || {}).email,
+          ((await db.get('SELECT email FROM users WHERE id = ?', t.sub_id)) || {}).email,
           `You missed "${t.title}" (${period})`,
           `<p>${deadlineDesc.charAt(0).toUpperCase() + deadlineDesc.slice(1)} passed without completion of <strong>${t.title}</strong>. Your Dom has been notified.
            ${t.auto_punish_title ? `<br>Punishment to complete within 24 hours: <strong>${t.auto_punish_title}</strong>.` : ''}
@@ -181,21 +179,21 @@ function checkDeadlines() {
     }
   }
 
-  checkWeeklyPerformance();
-  checkPunishmentLapses();
+  await checkWeeklyPerformance();
+  await checkPunishmentLapses();
 }
 
 // A punishment left uncompleted 24 hours after assignment notifies the Dom once.
-function checkPunishmentLapses() {
-  const stale = db.prepare(`
+async function checkPunishmentLapses() {
+  const stale = await db.all(`
     SELECT p.id, p.title, p.sub_id, s.name AS sub_name, d.email AS dom_email, d.email_notifications AS dom_notify
     FROM punishments p
     JOIN users s ON s.id = p.sub_id
     JOIN users d ON d.id = p.dom_id
     WHERE p.status = 'open' AND p.lapse_notified = 0
-      AND p.created_at <= datetime('now', '-24 hours')`).all();
+      AND p.created_at <= to_char(now() AT TIME ZONE 'UTC' - interval '24 hours', 'YYYY-MM-DD HH24:MI:SS')`);
   for (const p of stale) {
-    db.prepare('UPDATE punishments SET lapse_notified = 1 WHERE id = ?').run(p.id);
+    await db.run('UPDATE punishments SET lapse_notified = 1 WHERE id = ?', p.id);
     if (p.dom_notify) {
       mail.send(p.dom_email, `Punishment not completed within 24h: "${p.title}"`,
         `<p><strong>${p.sub_name}</strong>'s punishment <strong>${p.title}</strong> (assigned 24+ hours ago) is still open.</p>
@@ -205,8 +203,17 @@ function checkPunishmentLapses() {
 }
 
 function startScheduler() {
-  setInterval(checkDeadlines, 60 * 1000).unref();
-  setTimeout(checkDeadlines, 10 * 1000).unref();
+  // One overlapping run would race another for the same missed periods, so a
+  // run that outlives its 60s tick is skipped rather than queued.
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await checkDeadlines(); } catch (err) { console.error('[scheduler] cycle failed:', err); }
+    finally { running = false; }
+  };
+  setInterval(tick, 60 * 1000).unref();
+  setTimeout(tick, 10 * 1000).unref();
   console.log('[scheduler] running — checking every 60s for missed task deadlines');
 }
 

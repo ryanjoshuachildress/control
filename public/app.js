@@ -74,8 +74,10 @@ function applyFocus() {
   const id = String(spec).slice(colon + 1);
   // Every referenced item renders a comments block keyed to its subject/id,
   // so that double duty as the anchor for scrolling a link target into view.
+  // Subjects without threads (e.g. Moments) anchor on a data-focus marker.
   const anchor = app.querySelector(
-    `.comments[data-comment-subject="${subject}"][data-comment-id="${id}"]`);
+    `.comments[data-comment-subject="${subject}"][data-comment-id="${id}"]`)
+    || app.querySelector(`[data-focus="${subject}:${id}"]`);
   if (!anchor) return;
   const item = anchor.closest('.item') || anchor.closest('.card');
   if (item) {
@@ -84,6 +86,7 @@ function applyFocus() {
     setTimeout(() => item.classList.remove('focus-flash'), 4000);
   }
   // Open the thread so the referenced conversation is visible on arrival.
+  if (!anchor.classList.contains('comments')) return;
   const list = anchor.querySelector('.comment-list');
   if (list && list.hidden) {
     loadComments(anchor).then(() => {
@@ -95,7 +98,7 @@ function applyFocus() {
 
 function route() {
   if (!user) {
-    api('/auth/me').then(d => { user = d.user; route(); }).catch(() => renderAuth());
+    api('/auth/me').then(d => { user = d.user; immichOrigin = d.immich_origin || null; route(); }).catch(() => renderAuth());
     return;
   }
   const raw = (location.hash || '').slice(1);
@@ -107,6 +110,8 @@ function route() {
 
   if (user.role === 'dom') {
     if (page === 'feed') return renderFeed();
+    if (page === 'moments') return renderMoments();
+    if (page === 'recap') return renderRecap();
     if (page === 'sub' && parts[1]) return renderDomSub(parts[1], parts[2] || 'tasks');
     if (page === 'journal') return renderDomJournal();
     if (page === 'settings') return renderSettings();
@@ -114,6 +119,8 @@ function route() {
   }
   if (user.role === 'sub') {
     if (page === 'feed') return renderFeed();
+    if (page === 'recap') return renderRecap();
+    if (page === 'moments') return renderMoments();
     if (page === 'about') return renderSubAbout();
     if (page === 'journal') return renderSubJournal();
     if (page === 'stats') return renderStats();
@@ -228,8 +235,8 @@ function renderReset(token) {
 
 /* ---------- shell ---------- */
 const TABS = {
-  dom: [['#/feed', 'Feed'], ['#/dash', 'Dashboard'], ['#/journal', 'My journal'], ['#/settings', 'Settings']],
-  sub: [['#/feed', 'Feed'], ['#/today', 'Today'], ['#/journal', 'Journal'], ['#/about', 'About me'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
+  dom: [['#/feed', 'Feed'], ['#/moments', 'Moments'], ['#/recap', 'Recap'], ['#/dash', 'Dashboard'], ['#/journal', 'My journal'], ['#/settings', 'Settings']],
+  sub: [['#/feed', 'Feed'], ['#/today', 'Today'], ['#/journal', 'Journal'], ['#/about', 'About me'], ['#/moments', 'Moments'], ['#/recap', 'Recap'], ['#/stats', 'Stats'], ['#/settings', 'Settings']]
 };
 
 function shell(active, inner) {
@@ -273,7 +280,8 @@ async function renderToday() {
           : (t.completion_mode === 'checkoff'
               ? `<button class="primary small" data-action="checkoff" data-task="${esc(t.id)}">Mark complete</button>`
               : `<form data-form="evidence" data-task="${esc(t.id)}" class="row" style="align-items:flex-start;gap:14px">
-                   <label class="f fileinput" style="margin:0;flex:1;min-width:210px"><span>Photo / video evidence</span><input type="file" name="evidence" accept="image/*,video/*" required></label>
+                   <label class="f fileinput" style="margin:0;flex:1;min-width:210px"><span>Photo / video evidence</span><input type="file" name="evidence" accept="image/*,video/*"></label>
+                   <div style="flex:1;min-width:220px">${immichControl(null, '', 1)}</div>
                    <label class="f" style="margin:0;flex:1;min-width:180px"><span>Note (optional)</span><input type="text" name="note" maxlength="500"></label>
                    <button class="primary small" type="submit" style="margin-top:22px">Submit evidence</button>
                  </form>`)}
@@ -316,7 +324,8 @@ async function renderToday() {
         ${p.completion_mode === 'checkoff'
           ? `<button class="primary small" data-action="punish-checkoff" data-id="${esc(p.id)}">Mark complete</button>`
           : `<form data-form="punish-evidence" data-id="${esc(p.id)}" class="row" style="align-items:flex-start;gap:14px">
-               <label class="f fileinput" style="margin:0;flex:1;min-width:210px"><span>Photo / video evidence</span><input type="file" name="evidence" accept="image/*,video/*" required></label>
+               <label class="f fileinput" style="margin:0;flex:1;min-width:210px"><span>Photo / video evidence</span><input type="file" name="evidence" accept="image/*,video/*"></label>
+               <div style="flex:1;min-width:220px">${immichControl(null, '', 1)}</div>
                <label class="f" style="margin:0;flex:1;min-width:180px"><span>Note (optional)</span><input type="text" name="note" maxlength="500"></label>
                <button class="primary small" type="submit" style="margin-top:22px">Submit evidence</button>
              </form>`}
@@ -347,6 +356,7 @@ async function renderToday() {
     ${checkinHtml}
   `);
   updateScales();
+  bindImmich();
 }
 
 function updateScales() {
@@ -413,7 +423,9 @@ async function renderSubAbout() {
         ? (f.value
           ? `<a class="pf-thumb-link" href="/uploads/${esc(f.value)}" target="_blank" rel="noopener" title="View full size">
                <img class="pf-thumb" src="/uploads/${esc(f.value)}" alt="${esc(f.label)}"></a>`
-          : '<div class="tiny" style="margin-top:4px">—</div>')
+          : f.im_asset_id
+            ? mediaHtml({ immich: true, asset_id: f.im_asset_id, media: f.im_media || 'image' }, f.label)
+            : '<div class="tiny" style="margin-top:4px">—</div>')
         : `<div class="entry-body" style="margin-top:2px">${f.value ? esc(f.value) : '<span class="tiny">—</span>'}</div>`}
     </div>`;
 
@@ -465,8 +477,20 @@ const KIND_CHIP = {
 
 // One attachment: clickable thumbnail for photos, inline player for videos.
 // (Evidence on task/punishment cards was photo-only once; video evidence used
-// to render as a broken <img> — same helper now covers both.)
+// to render as a broken <img> — same helper now covers both. Immich-linked
+// assets stream through /api/immich and deep-link into the Immich app.)
+let immichOrigin = null;
+
 function mediaHtml(a, alt) {
+  if (a.immich) {
+    const open = `${immichOrigin || ''}/photos/${esc(a.asset_id)}`;
+    if (a.media === 'video') {
+      return `<span class="att"><video class="pf-video" src="/api/immich/asset/${esc(a.asset_id)}/original" controls preload="metadata"></video>
+        <div class="tiny"><a href="${open}" target="_blank" rel="noopener">↗ open in Immich</a></div></span>`;
+    }
+    return `<a class="pf-thumb-link" href="${open}" target="_blank" rel="noopener" title="Open in Immich">
+      <img class="pf-thumb" src="/api/immich/asset/${esc(a.asset_id)}/thumb" alt="${esc(alt || 'Immich photo')}"></a>`;
+  }
   const url = `/uploads/${esc(a.path)}`;
   if (a.media === 'video' || /\.(mp4|webm|mov|m4v)$/i.test(a.path)) {
     return `<video class="pf-video" src="${url}" controls preload="metadata"></video>`;
@@ -513,10 +537,12 @@ function feedCard(it) {
     bodyHtml = `<div class="title" style="margin-top:8px">${esc(it.task_title)}</div>`;
     if (it.note) bodyHtml += `<div class="entry-body">${esc(it.note)}</div>`;
     if (it.evidence_path) bodyHtml += mediaHtml({ path: it.evidence_path }, 'Evidence');
+    else if (it.im_asset_id) bodyHtml += mediaHtml({ immich: true, asset_id: it.im_asset_id, media: it.im_media || 'image' }, 'Evidence');
   } else if (it.kind === 'punishment') {
     bodyHtml = `<div class="title punish-text" style="margin-top:8px">${esc(it.title)}</div>`;
     if (it.note) bodyHtml += `<div class="entry-body">${esc(it.note)}</div>`;
     if (it.evidence_path) bodyHtml += mediaHtml({ path: it.evidence_path }, 'Evidence');
+    else if (it.im_asset_id) bodyHtml += mediaHtml({ immich: true, asset_id: it.im_asset_id, media: it.im_media || 'image' }, 'Evidence');
   } else if (it.kind === 'entry') {
     bodyHtml = (it.prompt_text ? `<div class="tiny" style="margin-top:8px">Re: “${esc(it.prompt_text.slice(0, 140))}”</div>` : '')
       + `<div class="entry-body">${esc(it.text)}</div>`;
@@ -537,6 +563,461 @@ function feedCard(it) {
     </div>`;
 }
 
+/* ---------- moments ---------- */
+// Display keys (ratings object) and form keys (server fields r_*) — same names
+// as the backend's moment_versions rating columns minus the prefix.
+const RATING_LABELS = [['originality', 'Originality'], ['hotness', 'Hotness'], ['surprise', 'Surprise'], ['connection', 'Connection']];
+const FORM_RATINGS = [['r_originality', 'Originality'], ['r_hotness', 'Hotness'], ['r_surprise', 'Surprise'], ['r_connection', 'Connection']];
+const PLANNED_CHIP = { planned: 'Planned', spontaneous: 'Spontaneous', both: 'Planned & spontaneous', other: 'Other' };
+const wordCount = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+
+const peopleLabel = (u) => (u && u.title) ? `${u.title} ${u.name}` : (u ? u.name : '');
+
+// Word-limited textareas — the first one over its limit names the field.
+function overWordMax(f) {
+  for (const ta of f.querySelectorAll('textarea[data-wordmax]')) {
+    const max = Number(ta.dataset.wordmax);
+    if (wordCount(ta.value) > max) return `“${esc(ta.dataset.wordlabel || 'That field')}” is over the ${max}-word limit`;
+  }
+  return null;
+}
+
+// Star widgets that were never rated — red-flagged in place, error toast names the rule.
+function requireStars(f) {
+  let missed = 0;
+  for (const [k] of FORM_RATINGS) {
+    const w = f.querySelector(`.stars[data-stars="${k}"]`);
+    if (!w || !w.dataset.value) { if (w) w.classList.add('miss'); missed++; }
+  }
+  return missed;
+}
+
+// Editable 1–5 star row (clickable); `value` prefills it (edit forms), the
+// read-only display is starsDisp().
+const starsInput = (name, label, value) => `
+  <div class="star-field" style="min-width:150px;flex:1"><span class="tiny">${esc(label)}</span>
+    <span class="stars" data-stars="${esc(name)}" ${Number(value) ? `data-value="${Number(value)}"` : ''} title="Click to rate">
+      ${[1, 2, 3, 4, 5].map(n => `<span class="star" data-v="${n}" title="${n} of 5">★</span>`).join('')}
+      <span class="star-out tiny">—</span>
+    </span></div>`;
+const starsDisp = (v) => Number(v)
+  ? `<span class="stars-ro">${'★'.repeat(Number(v))}${'☆'.repeat(5 - Number(v))}</span>`
+  : '<span class="stars-ro off">—</span>';
+
+// Clickable star widgets: click a star to set (click again to clear), fill
+// everything up to the chosen one.
+function bindStars(root = app) {
+  root.querySelectorAll('.stars[data-stars]').forEach(w => {
+    const mark = (n) => {
+      w.dataset.value = n ? String(n) : '';
+      w.querySelectorAll('.star').forEach(s => s.classList.toggle('on', !!n && Number(s.dataset.v) <= n));
+      const out = w.querySelector('.star-out');
+      if (out) out.textContent = n ? `${n} / 5` : '—';
+    };
+    w.querySelectorAll('.star').forEach(s => {
+      s.addEventListener('click', (e) => {
+        e.preventDefault();
+        const v = Number(s.dataset.v);
+        mark(v === Number(w.dataset.value) ? '' : v);
+      });
+    });
+    mark(w.dataset.value ? Number(w.dataset.value) : '');
+  });
+}
+
+const againRadio = (val, label, current) =>
+  `<label class="chip-target"><input type="radio" name="again" value="${val}" ${current === val ? 'checked' : ''}><span>${label}</span></label>`;
+
+const versionHtml = (g, v, edit = false) => v.locked
+  ? `<div class="mv locked">🔒 <b>${esc(peopleLabel(v))}</b> has recorded their version${v.author_role === 'dom' ? ' — record yours below to unlock it.' : ' — it stays sealed for you.'}</div>`
+  : `<div class="mv"${edit ? ' id="mv-edit-' + esc(v.id) + '"' : ''}>
+      <div class="spread">
+        <div class="mv-author">${esc(peopleLabel(v))} ${v.mine ? '<span class="chip acc">yours</span>' : ''}
+          <span class="chip ${v.again === 'yes' ? 'good' : 'bad'}">${v.again === 'yes' ? 'would do again' : 'not again'}</span></div>
+        <div class="row">
+          <span class="tiny">${esc(fmtDT(v.created_at))}</span>
+          ${v.mine ? `<button class="xsmall ghost" data-action="mv-edit" data-version="${esc(v.id)}" title="Edit your version">✎ Edit</button>` : ''}
+        </div>
+      </div>
+      ${v.summary ? `<div class="entry-body">${esc(v.summary)}</div>` : ''}
+      ${(v.attachments || []).length ? `<div class="feed-media">${v.attachments.map(a =>
+        `<span class="att">${mediaHtml(a, 'Photo')}${v.mine ? `<button class="xsmall ghost" data-action="del-att" data-moment="${esc(g.id)}" data-att="${esc(a.id)}" title="Remove this file">✕</button>` : ''}</span>`).join('')}</div>` : ''}
+      ${v.best_part ? `<div class="entry-body"><span class="tiny">Best:</span> ${esc(v.best_part)}</div>` : ''}
+      ${v.worst_part ? `<div class="entry-body"><span class="tiny">Not so good:</span> ${esc(v.worst_part)}</div>` : ''}
+      <div class="mv-ratings">${RATING_LABELS.map(([k, l]) =>
+        `<span class="rating"><span class="tiny">${l}</span> ${starsDisp(v.ratings[k])} <b>${Number(v.ratings[k]) || ''}</b></span>`).join('')}
+      </div>
+      ${v.review ? `<div class="entry-body mv-review">“${esc(v.review)}”</div>` : ''}
+    </div>`;
+
+// Edit form for an already-recorded version — prefilled, PUTs on save.
+const versionEditFormHtml = (g, v) => `
+  <details class="mv-form" id="mvEdit-${esc(v.id)}">
+    <summary>Edit ${esc(peopleLabel(v))}'s version</summary>
+    <form data-form="moment-edit" data-moment="${esc(g.id)}">
+      <label class="f"><span>Summary</span><textarea name="summary" data-wordmax="2000" data-wordlabel="Summary">${esc(v.summary)}</textarea><div class="word-out tiny">${wordCount(v.summary)} / 2000 words</div></label>
+      <div class="row">
+        <label class="f" style="flex:1;min-width:220px"><span>The best part</span><textarea name="best_part" data-wordmax="100" data-wordlabel="The best part" style="min-height:56px">${esc(v.best_part)}</textarea><div class="word-out tiny">${wordCount(v.best_part)} / 100 words</div></label>
+        <label class="f" style="flex:1;min-width:220px"><span>The not so good part</span><textarea name="worst_part" data-wordmax="100" data-wordlabel="The not so good part" style="min-height:56px">${esc(v.worst_part)}</textarea><div class="word-out tiny">${wordCount(v.worst_part)} / 100 words</div></label>
+      </div>
+      <div class="f"><span>Would you willingly do it again?</span>
+        <div class="row">${againRadio('yes', 'Yes', v.again)}${againRadio('no', 'No', v.again)}</div></div>
+      <div class="row">${FORM_RATINGS.map(([k, l]) => starsInput(k, l, v.ratings[l.toLowerCase()])).join('')}</div>
+      <label class="f"><span>Review <span class="tiny">(180 characters)</span></span><input type="text" name="review" maxlength="180" value="${esc(v.review)}"></label>
+      <label class="f fileinput"><span>Add photos or videos <span class="tiny">(kept files stay as in the card above)</span></span>
+        <input type="file" name="media" multiple accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"></label>
+      ${immichControl(g.date, (v.attachments || []).filter(a => a.immich).map(a => a.asset_id).join(','))}
+      <button class="primary small" type="submit">Save changes</button>
+      ${g.can_delete ? `<button class="small danger" type="button" data-action="del-moment" data-id="${esc(g.id)}">Delete whole moment</button>` : ''}
+    </form>
+  </details>`;
+
+// The "record your version" inline form for anyone who hasn't recorded yet
+// (a submissive in the group is prompted this way; the Dom can add theirs too).
+// For a prompted submissive it renders OPEN so it can't be missed.
+const versionFormHtml = (g) => !g.can_record ? '' : `
+  <details class="mv-form${g.needs_record ? ' urgent' : ''}"${g.needs_record ? ' open' : ''}>
+    <summary>${g.needs_record ? '🔒 Your version is waiting — record it to unlock reading the others' : 'Add your version'}</summary>
+    <form data-form="moment-version" data-moment="${esc(g.id)}">
+      <label class="f"><span>Summary</span><textarea name="summary" data-wordmax="2000" data-wordlabel="Summary"></textarea><div class="word-out tiny">0 / 2000 words</div></label>
+      <div class="row">
+        <label class="f" style="flex:1;min-width:220px"><span>The best part</span><textarea name="best_part" data-wordmax="100" data-wordlabel="The best part" style="min-height:56px"></textarea><div class="word-out tiny">0 / 100 words</div></label>
+        <label class="f" style="flex:1;min-width:220px"><span>The not so good part</span><textarea name="worst_part" data-wordmax="100" data-wordlabel="The not so good part" style="min-height:56px"></textarea><div class="word-out tiny">0 / 100 words</div></label>
+      </div>
+      <div class="f"><span>Would you willingly do it again?</span>
+        <div class="row">
+          <label class="chip-target"><input type="radio" name="again" value="yes" checked><span>Yes</span></label>
+          <label class="chip-target"><input type="radio" name="again" value="no"><span>No</span></label>
+        </div></div>
+      <div class="row">${FORM_RATINGS.map(([k, l]) => starsInput(k, l)).join('')}<div class="tiny" style="width:100%">Ratings are needed to save — click the stars.</div></div>
+      <label class="f"><span>Review <span class="tiny">(180 characters)</span></span><input type="text" name="review" maxlength="180"></label>
+      <label class="f fileinput"><span>Photos or videos <span class="tiny">(up to 10, 512 MB each)</span></span>
+        <input type="file" name="media" multiple accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"></label>
+      ${immichControl(g.date)}
+      <button class="primary small" type="submit">Record your version</button>
+    </form>
+  </details>`;
+
+const tagChips = (g) => g.tags.map(t =>
+  `<button class="tagchip${t.status === 'pending' ? ' pend' : ''}" data-action="filter-tag" data-id="${esc(t.id)}"
+     title="Show only moments tagged “${esc(t.name)}”">${esc(t.name)}${t.status === 'pending' ? ' ·' : ''}</button>`).join('');
+
+function momentCard(g) {
+  const who = [];
+  if (g.people.dom_involved && g.people.dom) who.push(esc(peopleLabel(g.people.dom)));
+  for (const s of g.people.subs) who.push(esc(peopleLabel(s)));
+  if (g.people.other) who.push(`<span class="tiny">other: ${esc(g.people.other)}</span>`);
+  return `
+  <div class="item moment" data-focus="moment:${esc(g.id)}">
+    <div class="spread">
+      <div style="min-width:0">
+        <div class="title" style="font-size:15.5px">${esc(g.title)}</div>
+        ${g.description ? `<div class="muted">${esc(g.description)}</div>` : ''}
+        <div class="tiny" style="margin-top:4px">${who.join(' · ') || '<span class="tiny">just me</span>'}</div>
+      </div>
+      <span class="chip acc">${esc(PLANNED_CHIP[g.planned.kind] || 'Planned')}${g.planned.kind === 'other' && g.planned.other ? `: ${esc(g.planned.other)}` : ''}</span>
+    </div>
+    <div class="tiny" style="margin-top:6px">${esc(fmtDate(g.date))}${g.time ? ` · ${esc(g.time)}` : ''} · ${esc(g.creator_title ? `${g.creator_title} ${g.creator_name}` : g.creator_name)}${g.created_by === user.id ? ' (you)' : ''}</div>
+    ${g.tags.length ? `<div class="row" style="margin-top:10px">${tagChips(g)}</div>` : ''}
+    ${g.versions.map(v => versionHtml(g, v)).join('')}
+    ${(user.role === 'dom' && (g.pending || []).length)
+      ? `<div class="mv-pending">⏳ Waiting on their version: ${(g.pending).map(p => esc(peopleLabel(p))).join(', ')} — they're prompted to record it before they can read yours.</div>`
+      : ''}
+    ${(() => { const mine = g.versions.find(v => !v.locked && v.mine); return mine ? versionEditFormHtml(g, mine) : ''; })()}
+    ${versionFormHtml(g)}
+    ${commentsBlock('moment', g.id, g.comment_count)}
+    ${g.can_delete ? `<div class="row" style="margin-top:10px"><button class="small danger" data-action="del-moment" data-id="${esc(g.id)}">Delete moment</button></div>` : ''}
+  </div>`;
+}
+
+async function renderMoments() {
+  const params = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const q = params.get('q') || '';
+  const tagId = params.get('tag') || '';
+  let d, pair = null;
+  const jobs = [api('/moments' + (q || tagId ? `?q=${encodeURIComponent(q)}&tag_id=${encodeURIComponent(tagId)}` : '')), api('/pair')];
+  try { [d, pair] = await Promise.all(jobs); } catch (e) { return shell('#/moments', `<div class="empty">${esc(e.message)}</div>`); }
+  immichOrigin = d.immich_origin || null;
+  const subs = (pair && pair.subs) || [];
+  const paired = user.role === 'dom' || !!user.dom_id;
+
+  const allTags = d.tags ? d.tags.tags.concat(d.tags.pending) : [];
+
+  // People checkboxes, labeled by title as asked. Everyone defaults in —
+  // the recorder un-checks anyone who wasn't part of it.
+  const domInfo = user.role === 'dom' ? user : (pair && pair.dom);
+  const domBox = `<label class="chip-target"><input type="checkbox" name="people_dom" value="1"> ${esc(peopleLabel(domInfo) || 'My Dominant')}</label>`;
+  const subBoxes = user.role === 'dom'
+    ? subs.map(s => `<label class="chip-target"><input type="checkbox" name="sub_ids" value="${esc(s.id)}"> ${esc(peopleLabel(s))}</label>`).join('')
+    : '';
+
+  const composer = paired ? `
+    <div class="card"><h2>Record a Moment</h2>
+      <p class="hint">A shared memory of something you experienced — ${user.role === 'dom' ? 'each involved submissive records their own version of it.' : 'your version stays yours; your Dom can see it.'}</p>
+      <form data-form="moment-create">
+        <div class="row">
+          <label class="f" style="flex:2;min-width:190px"><span>Title <span class="tiny">(50)</span></span><input type="text" name="title" required maxlength="50"></label>
+          <label class="f" style="flex:1;min-width:150px"><span>Date</span><input type="date" name="date" required></label>
+          <label class="f" style="flex:1;min-width:120px"><span>Time</span><input type="time" name="time"></label>
+        </div>
+        <label class="f"><span>Description <span class="tiny">(160)</span></span><input type="text" name="description" maxlength="160"></label>
+        <div class="f"><span>People involved</span>
+          <div class="row">${domBox}${subBoxes}</div>
+          ${user.role === 'dom' ? '<div class="tiny" style="margin-top:6px">Only the submissives you check here can see this moment and record their version of it.</div>' : ''}
+          <input type="text" name="people_other" maxlength="200" placeholder="Other people (not on Control)…" style="margin-top:8px">
+        </div>
+        <div class="f planned-block"><span>Planned or spontaneous</span>
+          <div class="row">
+            <label class="chip-target"><input type="checkbox" name="planned_values" value="planned" checked> Planned</label>
+            <label class="chip-target"><input type="checkbox" name="planned_values" value="spontaneous"> Spontaneous</label>
+            <label class="chip-target"><input type="checkbox" name="pk_other_flag" value="1"> Other</label>
+            <input type="text" name="planned_other" data-planned-other maxlength="80" placeholder="Describe…" hidden style="flex:1;min-width:140px">
+          </div>
+        </div>
+        <label class="f"><span>Summary</span><textarea name="summary" data-wordmax="2000" data-wordlabel="Summary"></textarea><div class="word-out tiny">0 / 2000 words</div></label>
+        <div class="row">
+          <label class="f" style="flex:1;min-width:220px"><span>The best part</span><textarea name="best_part" data-wordmax="100" data-wordlabel="The best part" style="min-height:56px"></textarea><div class="word-out tiny">0 / 100 words</div></label>
+          <label class="f" style="flex:1;min-width:220px"><span>The not so good part</span><textarea name="worst_part" data-wordmax="100" data-wordlabel="The not so good part" style="min-height:56px"></textarea><div class="word-out tiny">0 / 100 words</div></label>
+        </div>
+        <div class="f"><span>Would you willingly do it again?</span>
+          <div class="row">
+            <label class="chip-target"><input type="radio" name="again" value="yes" checked><span>Yes</span></label>
+            <label class="chip-target"><input type="radio" name="again" value="no"><span>No</span></label>
+          </div></div>
+        <div class="row">${starsInput('r_originality', 'Originality')}${starsInput('r_hotness', 'Hotness')}${starsInput('r_surprise', 'Surprise')}${starsInput('r_connection', 'Connection')}<div class="tiny" style="width:100%">Ratings are needed to save — click the stars.</div></div>
+        <label class="f"><span>Review <span class="tiny">(180 characters)</span></span><input type="text" name="review" maxlength="180"></label>
+        <label class="f"><span>Tags <span class="tiny">(comma separated)</span></span>
+          <input type="text" name="tags" list="tagListMoments" maxlength="500" placeholder="rope, date night, first time…">
+          <datalist id="tagListMoments">${allTags.map(t => `<option value="${esc(t.name)}"></option>`).join('')}</datalist>
+          <div class="tiny">${user.role === 'dom' ? 'New tags join the household master list right away.' : 'New tags wait for your Dom to approve them onto the master list.'}</div>
+        </label>
+        <label class="f fileinput"><span>Photos or videos <span class="tiny">(up to 10, 512 MB each)</span></span>
+          <input type="file" name="media" multiple accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"></label>
+        ${immichControl()}
+        <button class="primary" type="submit">Record moment</button>
+      </form>
+    </div>` : `
+    <div class="card"><h2>Moments</h2><p class="hint">Pair with a Dominant to record shared moments.</p></div>`;
+
+  // The Dom curates the master tag list: approve/merge pending, rename, delete.
+  const tagManager = user.role === 'dom' ? `
+    <div class="card"><h2>Tag master list</h2>
+      ${(d.tags.pending || []).length ? `
+        <p class="hint">New tags your submissives typed — waiting for your approval:</p>
+        ${d.tags.pending.map(t => `
+          <div class="item spread"><div>${esc(t.name)} <span class="chip">pending</span></div>
+            <div class="row">
+              <button class="small" data-action="rename-tag" data-id="${esc(t.id)}">Rename</button>
+              <button class="small primary" data-action="approve-tag" data-id="${esc(t.id)}">Approve</button>
+              <button class="small danger" data-action="del-tag" data-id="${esc(t.id)}">Delete</button>
+            </div></div>`).join('')}` : ''}
+      ${(d.tags.tags || []).length ? `
+        <div class="row" style="margin-top:10px">
+          ${d.tags.tags.map(t => `<span class="tagchip">${esc(t.name)}
+            <button class="xsmall ghost" data-action="rename-tag" data-id="${esc(t.id)}" title="Rename">✎</button>
+            <button class="xsmall ghost" data-action="del-tag" data-id="${esc(t.id)}" title="Delete">✕</button></span>`).join('')}
+        </div>` : '<div class="empty">No tags yet — type them into a moment above.</div>'}
+    </div>` : `
+    <div class="card"><h2>Tags</h2><p class="hint">Your Dom keeps the household tag list — new tags you type wait for their approval.</p>
+      ${(d.tags.pending || []).length ? `<div class="tiny">Pending from you: ${(d.tags.pending).map(t => esc(t.name)).join(', ')}</div>` : ''}
+    </div>`;
+
+  const filterBar = `
+    <form data-form="moment-filter" class="row" style="align-items:flex-end;margin-bottom:14px">
+      <label class="f" style="margin:0;flex:2;min-width:170px"><span>Search</span><input type="text" name="q" value="${esc(q)}" placeholder="Search moments…"></label>
+      <label class="f" style="margin:0;flex:1;min-width:140px"><span>Tag</span>
+        <select name="tag"><option value="">All tags</option>
+          ${(d.tags.tags || []).map(t => `<option value="${esc(t.id)}"${t.id === tagId ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}
+        </select></label>
+      <button class="small" type="submit" style="margin-bottom:14px">Apply</button>
+    </form>`;
+
+  shell('#/moments', `
+    ${composer}
+    ${tagManager}
+    <div class="card"><h2>Moments</h2>
+      ${filterBar}
+      ${d.groups.length ? d.groups.map(momentCard).join('') : '<div class="empty">No moments recorded yet.'}
+    </div>`);
+  bindStars();
+  bindImmich();
+}
+
+async function renderRecap() {
+  const params = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const mode = params.get('mode') === 'month' ? 'month' : 'year';
+  const year = /^\d{4}$/.test(params.get('year') || '') ? params.get('year') : String(new Date().getFullYear());
+  const month = params.get('month') || String(new Date().getMonth() + 1);
+  let r;
+  try { r = await api(`/moments/recap?year=${encodeURIComponent(year)}&mode=${encodeURIComponent(mode)}&month=${encodeURIComponent(month)}`); }
+  catch (e) { return shell('#/recap', `<div class="empty">${esc(e.message)}</div>`); }
+
+  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const years = (r.years || []);
+  const yearOpts = years.map(y => `<option value="${esc(y)}"${y === year ? ' selected' : ''}>${esc(y)}</option>`).join('')
+    || `<option value="${esc(year)}" selected>${esc(year)}</option>`;
+  const monthOpts = MONTH_NAMES.map((n, i) =>
+    `<option value="${i + 1}"${String(i + 1) === String(Number(month)) ? ' selected' : ''}>${n}</option>`).join('');
+
+  const maxN = r.buckets.length ? Math.max(...r.buckets.map(b => b.n)) : 0;
+  const histLabel = (b) => mode === 'month'
+    ? `${MONTH_NAMES[Number(month) - 1]} ${Number(b.bucket)}`
+    : MONTH_NAMES[b.bucket - 1].slice(0, 3);
+  const histRows = r.buckets.map(b => `
+    <div class="hbar">
+      <div class="hbar-label">${esc(histLabel(b))}</div>
+      <div class="hbar-track"><div class="hbar-fill" style="width:${maxN ? Math.round(b.n / maxN * 100) : 0}%"></div></div>
+      <div class="hbar-val">${b.n} moment${b.n === 1 ? '' : 's'}</div>
+    </div>`).join('');
+
+  const scopeLine = mode === 'month'
+    ? `${MONTH_NAMES[Number(month) - 1]} ${year}`
+    : `the year ${year}`;
+
+  const topRows = r.top.map(t => `
+    <div class="item spread">
+      <div><div class="title">${esc(t.title)}</div><div class="tiny">${esc(fmtDate(t.date))}</div></div>
+      <span class="rating"><span class="stars-ro">${'★'.repeat(Math.round(t.avg))}${'☆'.repeat(5 - Math.round(t.avg))}</span> <b>${t.avg}</b></span>
+    </div>`).join('');
+
+  shell('#/recap', `
+    <div class="card">
+      <h2>Moments recap</h2>
+      <p class="hint">${r.total} moment${r.total === 1 ? '' : 's'} recorded in ${esc(scopeLine)}${mode === 'year' ? ' — use the controls below for a single month' : ''}.</p>
+      <form data-form="recap-ctl" class="row" style="align-items:flex-end">
+        <label class="f" style="margin:0;width:120px"><span>View</span>
+          <select id="recapMode">
+            <option value="year"${mode === 'year' ? ' selected' : ''}>Whole year</option>
+            <option value="month"${mode === 'month' ? ' selected' : ''}>One month</option>
+          </select></label>
+        <label class="f" style="margin:0;width:120px"><span>Year</span>
+          <select id="recapYear">${yearOpts}</select></label>
+        <label class="f" style="margin:0;width:170px;${mode === 'month' ? '' : 'visibility:hidden'}"><span>Month</span>
+          <select id="recapMonth"${mode === 'month' ? '' : ' disabled'}>${monthOpts}</select></label>
+      </form>
+    </div>
+    <div class="tiles">
+      ${tile('Moments recorded', r.total)}
+      ${tile('Would do again', r.again_pct == null ? '—' : `${r.again_pct}%`)}
+      ${tile('Avg originality', r.avg.originality == null ? '—' : `${r.avg.originality}/5`)}
+      ${tile('Avg hotness', r.avg.hotness == null ? '—' : `${r.avg.hotness}/5`)}
+      ${tile('Avg surprise', r.avg.surprise == null ? '—' : `${r.avg.surprise}/5`)}
+      ${tile('Avg connection', r.avg.connection == null ? '—' : `${r.avg.connection}/5`)}
+    </div>
+    <div class="card"><h2>${mode === 'month' ? 'Spread over the month' : 'Spread over the year'}</h2>
+      ${histRows || `<div class="empty">No moments in ${esc(scopeLine)} yet.</div>`}
+    </div>
+    ${(r.tags || []).length ? `
+    <div class="card"><h2>Tags used</h2>
+      <div class="row">${r.tags.map(t => `<span class="tagchip">${esc(t.name)} · ${t.n}</span>`).join('')}</div>
+    </div>` : ''}
+    ${(r.people || []).length ? `
+    <div class="card"><h2>Who was in them</h2>
+      ${r.people.map(p => `<div class="row spread" style="padding:6px 0;border-bottom:1px solid var(--line-soft)"><div>${esc(peopleLabel(p))}</div><span class="tiny">${p.n} moment${p.n === 1 ? '' : 's'}</span></div>`).join('')}
+    </div>` : ''}
+    ${r.top.length ? `
+    <div class="card"><h2>Top rated</h2>
+      ${topRows}
+      <div class="tiny" style="margin-top:8px"><a href="#/moments">Open the moments →</a></div>
+    </div>` : ''}`);
+}
+
+// Link-from-Immich control: paste asset URLs/ids, or browse the library
+// around a date. Selected ids land in the form's hidden `immich` input.
+const immichIdsFromText = (text) => String(text || '').match(/[0-9a-fA-F-]{20,}/g) || [];
+
+const immichControl = (dateAttr, prefill = '', max = 0) => !immichOrigin ? '' : `
+  <div class="f immich-ctl" data-immich-ctl${dateAttr ? ` data-date="${esc(dateAttr)}"` : ''}${max ? ' data-max="' + max + '"' : ''}>
+    <span>From Immich <span class="tiny">(paste an Immich photo URL, or Browse${max ? ' — one' : ''})</span></span>
+    <input type="text" class="immich-paste" placeholder="${esc(immichOrigin)}/photos/&lt;asset id&gt;">
+    <div class="immich-chips"></div>
+    <div class="row"><button class="small" type="button" data-action="immich-browse">Browse library</button>
+      <span class="tiny">Files stay in Immich — Control links them, keys stay server-side.</span></div>
+    <div class="immich-grid" hidden></div>
+    <input type="hidden" name="immich" value="${esc(prefill || '')}">
+  </div>`;
+
+// Wires one control: chips ↔ hidden input, paste parsing, browse grid with
+// date windowing and selection toggles.
+function bindImmich(root = app) {
+  root.querySelectorAll('[data-immich-ctl]').forEach(ctl => {
+    const max = Number(ctl.dataset.max || 0); // 1 = single-select (evidence, photo)
+    const hidden = ctl.querySelector('input[name="immich"]');
+    const selected = new Set(String(hidden.value || '').split(',').filter(Boolean));
+    const grid = ctl.querySelector('.immich-grid');
+    const chips = ctl.querySelector('.immich-chips');
+    const paint = () => {
+      hidden.value = [...selected].join(',');
+      chips.innerHTML = [...selected].map(id =>
+        `<span class="att chip-immich"><img src="/api/immich/pick/${esc(id)}/thumb" alt="">
+          <button class="xsmall ghost" data-immich-del="${esc(id)}" title="Remove">✕</button></span>`).join('') ||
+        '<span class="tiny">No Immich assets selected.</span>';
+    };
+    chips.addEventListener('click', (e) => {
+      const del = e.target.closest('[data-immich-del]');
+      if (del) { selected.delete(del.dataset.immichDel); paint(); }
+    });
+    ctl.querySelector('.immich-paste').addEventListener('change', (e) => {
+      for (const id of immichIdsFromText(e.target.value)) selected.add(id);
+      e.target.value = '';
+      paint();
+    });
+    browseFor(ctl, grid, selected, paint);
+    paint();
+  });
+}
+
+async function browseFor(ctl, grid, selected, paint) {
+  const load = async (centerDate) => {
+    grid.hidden = false;
+    grid.innerHTML = '<div class="tiny" style="grid-column:1/-1">Loading Immich…</div>';
+    const base = new Date(`${centerDate}T00:00:00`);
+    const start = new Date(base.getTime() - 24 * 3600 * 1000).toISOString();
+    const end = new Date(base.getTime() + 2 * 24 * 3600 * 1000).toISOString();
+    try {
+      const d = await api(`/immich/search?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&size=120`);
+      grid.innerHTML =
+        `<div class="row" style="grid-column:1/-1;margin-bottom:4px">
+           <button class="small ghost" type="button" data-immich-shift="-7">‹ 7 days earlier</button>
+           <span class="tiny">${esc(fmtDate(centerDate))} · ${d.items.length} assets near this date</span>
+           <button class="small ghost" type="button" data-immich-shift="7">7 days later ›</button>
+         </div>` +
+        (d.items.length ? d.items.map(a =>
+          `<button type="button" class="immich-item${selected.has(a.id) ? ' on' : ''}" data-immich-id="${esc(a.id)}">
+             <img src="/api/immich/pick/${esc(a.id)}/thumb" alt="" loading="lazy">
+             ${a.media === 'video' ? '<span class="immich-vid">▶</span>' : ''}
+           </button>`).join('')
+          : '<div class="tiny" style="grid-column:1/-1">No Immich assets in this window.</div>');
+      const cur = centerDate;
+      grid.querySelectorAll('[data-immich-shift]').forEach(b => b.addEventListener('click', () => {
+        load(fmtDateShortShift(cur, Number(b.dataset.immichShift)));
+      }));
+      grid.querySelectorAll('[data-immich-id]').forEach(b => b.addEventListener('click', () => {
+        const id = b.dataset.immichId;
+        if (selected.has(id)) { selected.delete(id); b.classList.remove('on'); }
+        else {
+          if (max === 1) { selected.clear(); grid.querySelectorAll('.immich-item').forEach(x => x.classList.toggle('on', x === b)); }
+          selected.add(id); b.classList.add('on');
+        }
+        paint();
+      }));
+    } catch (e) { grid.innerHTML = `<div class="tiny" style="grid-column:1/-1">${esc(e.message)}</div>`; }
+  };
+  const ctlBtn = ctl.querySelector('[data-action="immich-browse"]');
+  ctlBtn.addEventListener('click', () => {
+    if (!grid.hidden) { grid.hidden = true; return; }
+    const dateInput = (ctl.closest('form') || {}).querySelector('input[name="date"]');
+    const base = ctl.dataset.date || ((dateInput && dateInput.value) || new Date().toISOString().slice(0, 10));
+    load(base);
+  });
+}
+
+const fmtDateShortShift = (dateStr, days) => {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
 async function renderFeed() {
   let feed, subs = [];
   try {
@@ -547,6 +1028,7 @@ async function renderFeed() {
   } catch (e) { return shell('#/feed', `<div class="empty">${esc(e.message)}</div>`); }
 
   const isDom = user.role === 'dom';
+  const crossOk = !isDom && user.household_interaction; // Dom allows subs to see each other
   const targetsHtml = subs.map(s =>
     `<label class="chip-target"><input type="checkbox" name="target" value="${esc(s.id)}" disabled> ${esc(s.title ? s.title + ' ' + s.name : s.name)}</label>`
   ).join('');
@@ -559,16 +1041,23 @@ async function renderFeed() {
         <label class="f"><span>Photos or videos (up to 10, 512 MB each)</span>
           <input type="file" name="media" multiple
             accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"></label>
+        ${immichControl('')}
         ${isDom ? `
         <div class="feed-audience">
           <label class="row"><input type="radio" name="audience" value="all" checked style="width:auto"> <span style="margin:0">Everyone — all ${subs.length} submissive${subs.length === 1 ? '' : 's'}</span></label>
           <label class="row"><input type="radio" name="audience" value="chosen" style="width:auto"> <span style="margin:0">Choose below</span></label>
           <div class="feed-targets">${targetsHtml || '<span class="tiny">No submissives paired yet.</span>'}</div>
+        </div>` : crossOk ? `
+        <div class="feed-audience">
+          <label class="row"><input type="radio" name="audience" value="household" checked style="width:auto"> <span style="margin:0">Everyone in the household <span class="tiny">(submissives can see it too)</span></span></label>
+          <label class="row"><input type="radio" name="audience" value="dom" style="width:auto"> <span style="margin:0">Only my Dominant</span></label>
         </div>` : ''}
         <button class="primary" type="submit">Post</button>
       </form>
       ${isDom ? '<p class="hint">“Everyone” broadcasts to the submissives paired right when you post — submissives who join later do not see it.</p>'
-              : '<p class="hint">Only your Dominant can see what you post here.</p>'}
+              : crossOk
+                ? '<p class="hint">Your Dominant lets the submissives see each other — choose who receives this post.</p>'
+                : '<p class="hint">Only your Dominant can see what you post here.</p>'}
     </div>`;
 
   shell('#/feed', `
@@ -578,6 +1067,7 @@ async function renderFeed() {
         ? feed.items.map(feedCard).join('')
         : '<div class="empty">No posts yet — write the first one.</div>'}
     </div>`);
+  bindImmich();
 
   // Audience picker: checkboxes only mean something in "Choose below" mode.
   const form = app.querySelector('form[data-form="feed-post"]');
@@ -847,7 +1337,11 @@ async function renderDomSub(subId, tab) {
     const compRow = (c) => `
       <tr><td>${esc(fmtDT(c.completed_at))}</td><td>${esc(c.task_title)}</td><td>${esc(c.period_key)}</td>
           <td class="evid-links">${c.method === 'evidence'
-            ? (c.evidence_path ? `<a href="/uploads/${esc(c.evidence_path)}" target="_blank">view</a>` : '<span class="tiny">evidence missing</span>')
+            ? (c.evidence_path
+              ? `<a href="/uploads/${esc(c.evidence_path)}" target="_blank">view</a>`
+              : c.immich_asset_id
+                ? `<a href="/api/immich/asset/${esc(c.immich_asset_id)}/original" target="_blank">Immich</a>`
+                : '<span class="tiny">evidence missing</span>')
             : '<span class="tiny">checked off</span>'}${c.note ? ` <span class="tiny">“${esc(c.note)}”</span>` : ''}</td></tr>`;
     const missedRow = (m) => `
       <tr><td>${esc(fmtDT(m.sent_at))}</td><td>${esc(m.task_title)}</td><td>${esc(m.period_key)}</td></tr>`;
@@ -926,7 +1420,8 @@ async function renderDomSub(subId, tab) {
           </div>
         </div>
         ${p.note ? `<div class="entry-body"><b>Note:</b> ${esc(p.note)}</div>` : ''}
-        ${p.evidence_path ? `<div class="evid-links" style="margin-top:8px"><a href="/uploads/${esc(p.evidence_path)}" target="_blank">view evidence</a></div>` : ''}
+        ${p.evidence_path ? `<div class="evid-links" style="margin-top:8px"><a href="/uploads/${esc(p.evidence_path)}" target="_blank">view evidence</a></div>`
+          : p.immich_asset_id ? `<div class="evid-links" style="margin-top:8px"><a href="/api/immich/asset/${esc(p.immich_asset_id)}/original" target="_blank">Immich evidence</a></div>` : ''}
         ${p.completed_at ? `<div class="tiny" style="margin-top:6px">completed ${esc(fmtDT(p.completed_at))}</div>` : ''}
         ${commentsBlock('punishment', p.id, p.comment_count)}
       </div>`;
@@ -973,9 +1468,12 @@ async function renderDomSub(subId, tab) {
              ${f.value
                ? `<a href="/uploads/${esc(f.value)}" target="_blank" rel="noopener" title="View full size">
                     <img class="pf-thumb" src="/uploads/${esc(f.value)}" alt="${esc(f.label)}"></a>`
-               : '<div class="tiny" style="margin-top:10px">No photo yet</div>'}
+               : f.im_asset_id
+                 ? mediaHtml({ immich: true, asset_id: f.im_asset_id, media: f.im_media || 'image' }, f.label)
+                 : '<div class="tiny" style="margin-top:10px">No photo yet</div>'}
              <label class="f" style="margin:0;flex:1;min-width:180px"><span>Replace photo <span class="tiny">(jpg, png, gif, webp)</span></span>
                <input type="file" data-pf-photo="${esc(f.id)}" accept=".jpg,.jpeg,.png,.gif,.webp,image/*"></label>
+             <div style="flex:1;min-width:200px">${immichControl(null, f.im_asset_id || '', 1)}</div>
            </div>`
         : (kind === 'multiline'
           ? `<textarea data-pf-val="${esc(f.id)}" maxlength="4000" style="min-height:60px">${esc(f.value)}</textarea>`
@@ -1071,6 +1569,7 @@ async function renderDomSub(subId, tab) {
     <nav class="tabs" style="margin:6px 0">${tabs}</nav>
     ${inner}`);
   if (tab === 'stats') bindViz();
+  bindImmich();
 }
 
 /* ---------- dom: own journal ---------- */
@@ -1166,6 +1665,12 @@ async function renderSettings() {
         <label class="f"><span>Timezone <span class="tiny">(drives all deadlines)</span></span>
           <input type="text" name="timezone" value="${esc(user.timezone)}" required aria-label="IANA timezone" placeholder="America/Chicago"></label>
         <label class="f row"><input type="checkbox" name="email_notifications" ${user.email_notifications ? 'checked' : ''} style="width:auto;margin-right:8px"><span style="margin:0">Email me notifications</span></label>
+        ${user.role === 'dom' ? `
+        <label class="f row"><input type="checkbox" name="allow_sub_interaction" ${user.allow_sub_interaction ? 'checked' : ''} style="width:auto;margin-right:8px"><span style="margin:0">Let my submissives see each other <span class="tiny">(household-wide)</span></span></label>
+        <p class="hint" style="margin-top:-8px">Off — the default — every submissive is sandboxed: they never see each other's feed posts, journals, or Moment versions, and each must record their version of a shared Moment to read yours. On — submissives who share a Moment or a household-wide post can read each other's versions and posts and join the threads. You always see everything either way.</p>` : ''}
+        <label class="f"><span>Immich API key ${user.immich_linked ? '<span class="tiny">(one is on file — paste a new one to replace it)</span>' : ''}</span>
+          <input type="password" name="immich_key" autocomplete="off" placeholder="${user.immich_linked ? '•••••••• (paste a new key to replace)' : 'paste your Immich API key'}"></label>
+        ${user.immich_linked ? '<button class="small ghost" type="button" data-action="immich-clear" style="margin:-6px 0 14px">Remove Immich key</button>' : '<p class="hint" style="margin-top:-8px">Lets you link photos and videos straight from your Immich library into Moments — no re-uploads.</p>'}
         <button class="primary" type="submit">Save</button>
       </form>
     </div>
@@ -1226,9 +1731,11 @@ const forms = {
   async evidence(f) {
     const taskId = f.dataset.task;
     const input = f.querySelector('input[type="file"]');
-    if (!input.files.length) return toast('Choose a photo or video first', true);
+    const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+    if (!input.files.length && !(imCtl && imCtl.value.trim())) return toast('Choose a photo/video or link one from Immich', true);
     const fd = new FormData();
-    fd.append('evidence', input.files[0]);
+    if (input.files.length) fd.append('evidence', input.files[0]);
+    if (imCtl && imCtl.value.trim()) fd.append('immich', imCtl.value.trim());
     fd.append('note', f.note ? f.note.value : '');
     fd.append('method', 'evidence');
     try {
@@ -1242,9 +1749,11 @@ const forms = {
 
   async punishEvidence(f) {
     const input = f.querySelector('input[type="file"]');
-    if (!input.files.length) return toast('Choose a photo or video first', true);
+    const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+    if (!input.files.length && !(imCtl && imCtl.value.trim())) return toast('Choose a photo/video or link one from Immich', true);
     const fd = new FormData();
-    fd.append('evidence', input.files[0]);
+    if (input.files.length) fd.append('evidence', input.files[0]);
+    if (imCtl && imCtl.value.trim()) fd.append('immich', imCtl.value.trim());
     fd.append('note', f.note ? f.note.value : '');
     fd.append('method', 'evidence');
     try {
@@ -1319,12 +1828,16 @@ const forms = {
   async profile(f) {
     try {
       const titleVal = f.title.value === '__custom' ? (f.customTitle ? f.customTitle.value : '') : f.title.value;
-      const d = await api('/auth/me', { method: 'PATCH', body: {
+      const body = {
         name: f.name.value, title: titleVal, timezone: f.timezone.value,
-        email_notifications: f.email_notifications.checked
-      }});
+        email_notifications: f.email_notifications.checked,
+        allow_sub_interaction: user.role === 'dom' ? f.allow_sub_interaction.checked : undefined
+      };
+      const keyVal = f.immich_key ? String(f.immich_key.value || '').trim() : '';
+      if (keyVal) body.immich_key = keyVal; // only sent when the user pasted one
+      const d = await api('/auth/me', { method: 'PATCH', body });
       user = d.user;
-      toast('Profile saved');
+      toast(keyVal ? 'Profile saved — Immich key verified' : 'Profile saved');
       route();
     } catch (e) { toast(e.message, true); }
   },
@@ -1341,9 +1854,12 @@ const forms = {
     try {
       const text = f.body.value;
       const files = [...f.media.files];
-      if (!text.trim() && !files.length) return toast('Write something or attach a photo/video', true);
+      const imSel = f.querySelector('[data-immich-ctl] input[name="immich"]') || { value: '' };
+      if (!text.trim() && !files.length && !imSel.value.trim()) return toast('Write something or attach a photo/video', true);
       const fd = new FormData();
       fd.append('body', text);
+      const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+      if (imCtl && imCtl.value.trim()) fd.append('immich', imCtl.value.trim());
       if (user.role === 'dom') {
         const mode = f.querySelector('input[name="audience"]:checked');
         if (mode && mode.value === 'chosen') {
@@ -1351,6 +1867,10 @@ const forms = {
           if (!targets.length) return toast('Pick at least one submissive, or choose Everyone', true);
           for (const t of targets) fd.append('target_sub_ids', t);
         } else fd.append('target_all', '1');
+      } else {
+        // Household-wide choice, only honored while the Dom allows interaction.
+        const aud = f.querySelector('input[name="audience"]:checked');
+        if (aud && aud.value === 'household') fd.append('audience', 'household');
       }
       for (const file of files) fd.append('media', file);
       const res = await fetch('/api/feed', { method: 'POST', body: fd, credentials: 'same-origin' });
@@ -1359,6 +1879,122 @@ const forms = {
       toast('Posted');
       route();
     } catch (e) { toast(e.message, true); }
+  },
+
+  // --- moments ---
+
+  async momentCreate(f) {
+    try {
+      const overWords = overWordMax(f);
+      if (overWords) return toast(overWords, true);
+      const pks = [...f.querySelectorAll('input[name="planned_values"]:checked')].map(i => i.value);
+      const otherFlag = f.querySelector('input[name="pk_other_flag"]').checked;
+      const kind = otherFlag ? 'other' : (pks.length === 2 ? 'both' : (pks[0] || 'planned'));
+      const fd = new FormData();
+      fd.append('title', f.title.value);
+      fd.append('description', f.description.value);
+      fd.append('date', f.date.value);
+      fd.append('time', f.time.value);
+      fd.append('people_dom', f.querySelector('input[name="people_dom"]').checked ? '1' : '');
+      for (const s of [...f.querySelectorAll('input[name="sub_ids"]:checked')]) fd.append('sub_ids', s.value);
+      fd.append('people_other', f.people_other.value);
+      if (kind === 'other') {
+        if (!f.planned_other.value.trim()) return toast('Describe the "other" option', true);
+        fd.append('planned_kind', 'other');
+        fd.append('planned_other', f.planned_other.value);
+      } else if (kind === 'both' && f.planned_other.value.trim()) {
+        fd.append('planned_kind', 'both');
+        fd.append('planned_other', f.planned_other.value);
+      } else fd.append('planned_kind', kind);
+      fd.append('summary', f.summary.value);
+      fd.append('best_part', f.best_part.value);
+      fd.append('worst_part', f.worst_part.value);
+      fd.append('again', (f.querySelector('input[name="again"]:checked') || {}).value || 'yes');
+      for (const [k] of FORM_RATINGS) {
+        const w = f.querySelector(`.stars[data-stars="${k}"]`);
+        if (!w || !w.dataset.value) {
+          requireStars(f);
+          return toast('Rate all four with the stars — they are required to save', true);
+        }
+        fd.append(k, w.dataset.value);
+      }
+      const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+      if (imCtl && imCtl.value.trim()) fd.append('immich', imCtl.value.trim());
+      fd.append('review', f.review.value);
+      fd.append('tags', f.tags.value);
+      for (const file of [...f.media.files]) fd.append('media', file);
+      const res = await fetch('/api/moments', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast('Moment recorded' + (user.role === 'dom' ? ' — involved submissives are being asked to record their version' : ''));
+      go('#/moments'); route();
+    } catch (e) { toast(e.message, true); }
+  },
+
+  async momentVersion(f) {
+    try {
+      const overWords = overWordMax(f);
+      if (overWords) return toast(overWords, true);
+      const fd = new FormData();
+      fd.append('summary', f.summary.value);
+      fd.append('best_part', f.best_part.value);
+      fd.append('worst_part', f.worst_part.value);
+      fd.append('again', (f.querySelector('input[name="again"]:checked') || {}).value || 'yes');
+      const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+      if (imCtl) fd.append('immich', imCtl.value.trim()); // replace-on-edit semantics
+      for (const [k] of FORM_RATINGS) {
+        const w = f.querySelector(`.stars[data-stars="${k}"]`);
+        if (!w || !w.dataset.value) {
+          requireStars(f);
+          return toast('Rate all four with the stars — they are required to save', true);
+        }
+        fd.append(k, w.dataset.value);
+      }
+      fd.append('review', f.review.value);
+      for (const file of [...f.media.files]) fd.append('media', file);
+      const res = await fetch(`/api/moments/${f.dataset.moment}/version`, { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast('Your version is recorded — reading unlocked');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+
+  async momentEdit(f) {
+    try {
+      const overWords = overWordMax(f);
+      if (overWords) return toast(overWords, true);
+      const fd = new FormData();
+      fd.append('summary', f.summary.value);
+      fd.append('best_part', f.best_part.value);
+      fd.append('worst_part', f.worst_part.value);
+      fd.append('again', (f.querySelector('input[name="again"]:checked') || {}).value || 'yes');
+      const imCtl = f.querySelector('[data-immich-ctl] input[name="immich"]');
+      if (imCtl) fd.append('immich', imCtl.value.trim()); // replace-on-edit semantics
+      for (const [k] of FORM_RATINGS) {
+        const w = f.querySelector(`.stars[data-stars="${k}"]`);
+        if (!w || !w.dataset.value) {
+          requireStars(f);
+          return toast('Rate all four with the stars — they are required to save', true);
+        }
+        fd.append(k, w.dataset.value);
+      }
+      fd.append('review', f.review.value);
+      for (const file of [...f.media.files]) fd.append('media', file);
+      const res = await fetch(`/api/moments/${f.dataset.moment}/version`, { method: 'PUT', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast('Version updated');
+      route();
+    } catch (e) { toast(e.message, true); }
+  },
+
+  async momentFilter(f) {
+    const qs = [];
+    if (f.q.value.trim()) qs.push('q=' + encodeURIComponent(f.q.value.trim()));
+    if (f.tag.value) qs.push('tag=' + encodeURIComponent(f.tag.value));
+    go('#/moments' + (qs.length ? '?' + qs.join('&') : ''));
+    route(); // hashchange may not fire when the query changed without the path
   },
 
   async comment(f) {
@@ -1380,6 +2016,43 @@ const forms = {
 /* ---------- actions ---------- */
 const actions = {
   'logout': async () => { try { await api('/auth/logout', { method: 'POST' }); } catch { /* ignore */ } user = null; go('#/login'); route(); },
+
+  // --- moments ---
+  'immich-clear': async () => {
+    if (!confirm('Remove your Immich API key from Control? Existing links keep working.')) return;
+    try { const d = await api('/auth/me', { method: 'PATCH', body: { immich_key: '' } }); user = d.user; toast('Immich key removed'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'mv-edit': (btn) => {
+    const d = document.getElementById(`mvEdit-${btn.dataset.version}`);
+    if (d) { d.open = true; d.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  },
+  'del-att': async (btn) => {
+    try { await api(`/moments/${btn.dataset.moment}/attachments/${btn.dataset.att}`, { method: 'DELETE' }); toast('Attachment removed'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'del-moment': async (btn) => {
+    if (!confirm('Delete this moment — all versions, photos and tags?')) return;
+    try { await api(`/moments/${btn.dataset.id}`, { method: 'DELETE' }); toast('Moment deleted'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'filter-tag': (btn) => { go(`#/moments?tag=${encodeURIComponent(btn.dataset.id)}`); route(); },
+  'approve-tag': async (btn) => {
+    try { await api(`/moments/tags/${btn.dataset.id}/approve`, { method: 'POST' }); toast('Tag approved — everyone can use it'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'rename-tag': async (btn) => {
+    const name = prompt('Rename tag (it stays attached to every moment using it):');
+    if (!name || !name.trim()) return;
+    try { await api(`/moments/tags/${btn.dataset.id}`, { method: 'PATCH', body: { name: name.trim() } }); toast('Tag renamed'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+  'del-tag': async (btn) => {
+    if (!confirm('Remove this tag from the master list and from every moment using it?')) return;
+    try { await api(`/moments/tags/${btn.dataset.id}`, { method: 'DELETE' }); toast('Tag removed'); route(); }
+    catch (e) { toast(e.message, true); }
+  },
+
   'checkoff': async (btn) => {
     try {
       await api(`/tasks/${btn.dataset.task}/complete`, { method: 'POST', body: { method: 'checkoff' } });
@@ -1458,14 +2131,26 @@ const actions = {
     try {
       await api(`/profile/fields/${id}`, { method: 'PATCH', body: { label: label.value } });
       if (btn.dataset.kind === 'photo') {
-        const inp = app.querySelector(`[data-pf-photo="${id}"]`);
-        if (!inp || !inp.files.length) return toast('Saved — the photo is unchanged (pick a new image to replace it)');
-        const fd = new FormData();
-        fd.append('photo', inp.files[0]);
-        fd.append('field_id', id);
-        const res = await fetch(`/api/profile/sub/${subId}/photo`, { method: 'POST', body: fd, credentials: 'same-origin' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        // Immich link first: it wins when one is selected (single-select ctl).
+        const imCtl = btn.closest('.item').querySelector('[data-immich-ctl] input[name="immich"]');
+        const imId = imCtl ? imCtl.value.trim() : '';
+        if (!imId) {
+          const inp = app.querySelector(`[data-pf-photo="${id}"]`);
+          if (!inp || !inp.files.length) return toast('Pick a new image or link one from Immich (or nothing changed and it is saved as-is)', true);
+          const fd = new FormData();
+          fd.append('photo', inp.files[0]);
+          fd.append('field_id', id);
+          const res = await fetch(`/api/profile/sub/${subId}/photo`, { method: 'POST', body: fd, credentials: 'same-origin' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Upload failed');
+        } else {
+          const fd = new FormData();
+          fd.append('field_id', id);
+          fd.append('asset_id', imId);
+          const res = await fetch(`/api/profile/sub/${subId}/photo`, { method: 'POST', body: fd, credentials: 'same-origin' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Link failed');
+        }
       } else {
         const val = app.querySelector(`[data-pf-val="${id}"]`);
         await api(`/profile/sub/${subId}/value`, { method: 'PUT', body: { field_id: id, value: val.value } });
@@ -1526,10 +2211,39 @@ app.addEventListener('submit', (e) => {
 
 app.addEventListener('input', (e) => {
   if (e.target.matches('input[type="range"]')) updateScales();
+  // Live word counters for the Moments word-limited fields
+  if (e.target.matches('textarea[data-wordmax]')) {
+    const out = e.target.parentElement.querySelector('.word-out');
+    if (out) {
+      const max = Number(e.target.dataset.wordmax);
+      const n = wordCount(e.target.value);
+      out.textContent = `${n} / ${max} words`;
+      out.classList.toggle('over', n > max);
+    }
+  }
 });
 
 // Stats time-range filter — one filter row scoping everything below it (dataviz spec).
 app.addEventListener('change', async (e) => {
+  // Recap view/year/month controls re-render the recap page
+  if (e.target.id === 'recapMode' || e.target.id === 'recapYear' || e.target.id === 'recapMonth') {
+    const p = new URLSearchParams(location.hash.split('?')[1] || '');
+    if (e.target.id === 'recapMode') p.set('mode', e.target.value);
+    if (e.target.id === 'recapYear') p.set('year', e.target.value);
+    if (e.target.id === 'recapMonth') p.set('month', e.target.value);
+    go('#/recap?' + p.toString());
+    route();
+    return;
+  }
+  // "Other — describe…" reveals its text field when checked
+  if (e.target.name === 'pk_other_flag') {
+    const block = e.target.closest('.planned-block');
+    if (block) {
+      const other = block.querySelector('[data-planned-other]');
+      if (other) other.hidden = !e.target.checked;
+    }
+    return;
+  }
   if (e.target.id !== 'statsRange' || !statsCtx) return;
   const url = statsCtx.subId ? `/stats/sub/${statsCtx.subId}?days=` : `/stats/me?days=`;
   const zone = app.querySelector('.chart-zone');

@@ -19,6 +19,11 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-Control <control@example.com>}
+      # Per-file upload cap; Immich integration (optional) — link library
+      # photos/videos into Moments via per-user API keys
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-512}
+      - IMMICH_URL=${IMMICH_URL:-}
+      - IMMICH_KEY=${IMMICH_KEY:-}
       - TZ=${TZ:-UTC}
     volumes:
       - ./data:/data

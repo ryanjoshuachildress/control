@@ -5,6 +5,7 @@ const time = require('../lib/time');
 const mail = require('../lib/mail');
 const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib/auth');
 const { upload } = require('../lib/uploads');
+const { resolveRefs } = require('../lib/immich');
 
 const router = express.Router();
 
@@ -14,8 +15,8 @@ const TASK_FREQS = ['daily', 'weekly', 'monthly'];
 const LABEL = { daily: 'Due daily — deadline midnight', weekly: 'Due weekly — deadline Sunday midnight', monthly: 'Due monthly — deadline end of month' };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const commentCount = db.prepare(
-  `SELECT COUNT(*) AS n FROM comments WHERE subject = 'task' AND subject_id = ?`);
+const commentCount = (id) => db.get(
+  `SELECT COUNT(*) AS n FROM comments WHERE subject = 'task' AND subject_id = ?`, id);
 
 // Deadlines in the sub's own time; a due date overrides the recurring cycle.
 function deadlineLine(t, tz) {
@@ -26,8 +27,8 @@ function deadlineLine(t, tz) {
 
 // Notify the sub about a task change: diffs the PATCH updates against the
 // pre-update row, and skips mail entirely when nothing actually differs.
-function subTaskChangeMail(task, updates) {
-  const sub = db.prepare('SELECT email, email_notifications, timezone FROM users WHERE id = ?').get(task.sub_id);
+async function subTaskChangeMail(task, updates) {
+  const sub = await db.get('SELECT email, email_notifications, timezone FROM users WHERE id = ?', task.sub_id);
   if (!sub || !sub.email_notifications) return;
   const tz = sub.timezone;
   const changes = [];
@@ -50,7 +51,7 @@ function subTaskChangeMail(task, updates) {
   if (!changes.length) return;
 
   const current = { ...task, ...updates };
-  const domName = (db.prepare('SELECT name FROM users WHERE id = ?').get(task.dom_id) || {}).name || 'Your Dom';
+  const domName = (await db.get('SELECT name FROM users WHERE id = ?', task.dom_id) || {}).name || 'Your Dom';
   mail.send(sub.email, `Task changed: ${updates.title || task.title}`,
     `<p><strong>${esc(domName)}</strong> changed the task <strong>${esc(current.title)}</strong>:</p>
      <ul><li>${changes.join('</li><li>')}</li></ul>
@@ -67,16 +68,16 @@ function normalizeDueDate(raw) {
 
 // ---------- submissive ----------
 
-router.get('/today', requireSub, (req, res) => {
+router.get('/today', requireSub, async (req, res) => {
   const tz = req.user.timezone;
   const now = new Date();
-  const tasks = db.prepare('SELECT * FROM tasks WHERE sub_id = ? AND active = 1 ORDER BY created_at').all(req.user.id);
-  const getCompletion = db.prepare('SELECT * FROM completions WHERE task_id = ? AND period_key = ?');
+  const tasks = await db.all('SELECT * FROM tasks WHERE sub_id = ? AND active = 1 ORDER BY created_at', req.user.id);
 
-  const out = tasks.map(t => {
+  const out = [];
+  for (const t of tasks) {
     const periodKey = t.due_date ? `due:${t.due_date}` : time.currentPeriodKey(now, tz, t.frequency);
-    const comp = getCompletion.get(t.id, periodKey);
-    return {
+    const comp = await db.get('SELECT * FROM completions WHERE task_id = ? AND period_key = ?', t.id, periodKey);
+    out.push({
       id: t.id,
       title: t.title,
       description: t.description,
@@ -88,30 +89,36 @@ router.get('/today', requireSub, (req, res) => {
       done: !!comp,
       method: comp && comp.method,
       completed_at: comp && comp.completed_at,
-      comment_count: commentCount.get(t.id).n
-    };
-  });
+      comment_count: (await commentCount(t.id)).n
+    });
+  }
   res.json({ paired: !!req.user.dom_id, timezone: tz, date: time.currentDateKey(now, tz), tasks: out });
 });
 
-router.post('/:id/complete', requireSub, (req, res) => {
-  upload.single('evidence')(req, res, (err) => {
+router.post('/:id/complete', requireSub, async (req, res) => {
+  upload.single('evidence')(req, res, async (err) => {
     if (err) {
       const msg = /file too large/i.test(err.message) ? 'File too large' : (err.message || 'Upload failed');
       return res.status(400).json({ error: msg });
     }
     try {
-      const task = db.prepare('SELECT * FROM tasks WHERE id = ? AND sub_id = ?').get(req.params.id, req.user.id);
+      const task = await db.get('SELECT * FROM tasks WHERE id = ? AND sub_id = ?', req.params.id, req.user.id);
       if (!task || !task.active) return res.status(404).json({ error: 'Task not found' });
 
       const periodKey = task.due_date
         ? `due:${task.due_date}`
         : time.currentPeriodKey(new Date(), req.user.timezone, task.frequency);
-      if (db.prepare('SELECT id FROM completions WHERE task_id = ? AND period_key = ?').get(task.id, periodKey)) {
+      if (await db.get('SELECT id FROM completions WHERE task_id = ? AND period_key = ?', task.id, periodKey)) {
         return res.status(409).json({ error: 'Task already completed for this period' });
       }
 
-      const method = req.file ? 'evidence' : String((req.body || {}).method || '');
+      // Evidence can be an uploaded file or a linked Immich library asset.
+      let immichRow = null;
+      if ((req.body || {}).immich) {
+        try { [immichRow] = await resolveRefs(req.user.id, req.user.dom_id, req.body.immich); }
+        catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      }
+      const method = (req.file || immichRow) ? 'evidence' : String((req.body || {}).method || '');
       if (method !== task.completion_mode) {
         return res.status(400).json({
           error: task.completion_mode === 'evidence'
@@ -121,15 +128,16 @@ router.post('/:id/complete', requireSub, (req, res) => {
       }
 
       const id = crypto.randomUUID();
-      db.prepare(`INSERT INTO completions (id, task_id, period_key, method, evidence_path, note)
-                  VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id, task.id, periodKey, method, req.file ? req.file.filename : null,
-             String((req.body || {}).note || '').slice(0, 500));
+      await db.run(`INSERT INTO completions (id, task_id, period_key, method, evidence_path, note, immich_asset_id, immich_media)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, task.id, periodKey, method, req.file ? req.file.filename : null,
+        String((req.body || {}).note || '').slice(0, 500),
+        immichRow ? immichRow.asset_id : null, immichRow ? immichRow.media : '');
 
       // A due-date task is a one-off: completing it retires the task.
-      if (task.due_date) db.prepare('UPDATE tasks SET active = 0 WHERE id = ?').run(task.id);
+      if (task.due_date) await db.run('UPDATE tasks SET active = 0 WHERE id = ?', task.id);
 
-      const dom = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'dom'").get(task.dom_id);
+      const dom = await db.get("SELECT * FROM users WHERE id = ? AND role = 'dom'", task.dom_id);
       if (dom && dom.email_notifications) {
         mail.send(dom.email, `${req.user.name} completed "${task.title}"`,
           `<p><strong>${req.user.name}</strong> completed <strong>${task.title}</strong> (period ${periodKey})${method === 'evidence' ? ' with photo/video evidence' : ''} — view it in their task history.</p>
@@ -145,9 +153,9 @@ router.post('/:id/complete', requireSub, (req, res) => {
 
 // ---------- dominant ----------
 
-router.post('/', requireDom, (req, res) => {
+router.post('/', requireDom, async (req, res) => {
   const { sub_id, title, description, frequency, completion_mode, auto_punish_title, due_date } = req.body || {};
-  const sub = assertDomOwnsSub(db, req.user.id, String(sub_id || ''));
+  const sub = await assertDomOwnsSub(db, req.user.id, String(sub_id || ''));
   const due = normalizeDueDate(due_date);
   if (!due.ok) return res.status(400).json({ error: 'Due date must be YYYY-MM-DD' });
   if (!title || String(title).trim().length === 0) return res.status(400).json({ error: 'Task title is required' });
@@ -155,10 +163,10 @@ router.post('/', requireDom, (req, res) => {
   if (!['checkoff', 'evidence'].includes(completion_mode)) return res.status(400).json({ error: 'Completion mode must be checkoff or evidence' });
 
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO tasks (id, dom_id, sub_id, title, description, frequency, completion_mode, auto_punish_title, due_date)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, req.user.id, sub.id, String(title).trim().slice(0, 120), String(description || '').slice(0, 1000), frequency, completion_mode,
-         String(auto_punish_title || '').trim().slice(0, 120), due.value);
+  await db.run(`INSERT INTO tasks (id, dom_id, sub_id, title, description, frequency, completion_mode, auto_punish_title, due_date)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    id, req.user.id, sub.id, String(title).trim().slice(0, 120), String(description || '').slice(0, 1000), frequency, completion_mode,
+    String(auto_punish_title || '').trim().slice(0, 120), due.value);
 
   if (sub.email_notifications) {
     mail.send(sub.email, `New task from your ${req.user.title || 'Dom'}: ${esc(title)}`,
@@ -171,8 +179,8 @@ router.post('/', requireDom, (req, res) => {
   res.json({ ok: true, id });
 });
 
-router.patch('/:id', requireDom, (req, res) => {
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ? AND dom_id = ?').get(req.params.id, req.user.id);
+router.patch('/:id', requireDom, async (req, res) => {
+  const task = await db.get('SELECT * FROM tasks WHERE id = ? AND dom_id = ?', req.params.id, req.user.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const { active, title, description, auto_punish_title, due_date } = req.body || {};
   const updates = {};
@@ -190,20 +198,20 @@ router.patch('/:id', requireDom, (req, res) => {
   if (description !== undefined) updates.description = String(description).slice(0, 1000);
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
   const sets = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE tasks SET ${sets} WHERE id = ?`).run(...Object.values(updates), task.id);
+  await db.run(`UPDATE tasks SET ${sets} WHERE id = ?`, ...Object.values(updates), task.id);
   subTaskChangeMail(task, updates);
   res.json({ ok: true });
 });
 
-router.delete('/:id', requireDom, (req, res) => {
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ? AND dom_id = ?').get(req.params.id, req.user.id);
+router.delete('/:id', requireDom, async (req, res) => {
+  const task = await db.get('SELECT * FROM tasks WHERE id = ? AND dom_id = ?', req.params.id, req.user.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  db.prepare('DELETE FROM completions WHERE task_id = ?').run(task.id);
-  db.prepare('DELETE FROM missed_alerts WHERE task_id = ?').run(task.id);
-  db.prepare('DELETE FROM comments WHERE subject = \'task\' AND subject_id = ?').run(task.id);
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+  await db.run('DELETE FROM completions WHERE task_id = ?', task.id);
+  await db.run('DELETE FROM missed_alerts WHERE task_id = ?', task.id);
+  await db.run("DELETE FROM comments WHERE subject = 'task' AND subject_id = ?", task.id);
+  await db.run('DELETE FROM tasks WHERE id = ?', task.id);
 
-  const sub = db.prepare('SELECT email, email_notifications FROM users WHERE id = ?').get(task.sub_id);
+  const sub = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', task.sub_id);
   if (sub && sub.email_notifications) {
     mail.send(sub.email, `Task removed: ${task.title}`,
       `<p><strong>${esc(req.user.name)}</strong> removed the task <strong>${esc(task.title)}</strong>
@@ -214,39 +222,40 @@ router.delete('/:id', requireDom, (req, res) => {
   res.json({ ok: true });
 });
 
-router.get('/dom/sub/:subId', requireDom, (req, res) => {
-  const sub = assertDomOwnsSub(db, req.user.id, req.params.subId);
+router.get('/dom/sub/:subId', requireDom, async (req, res) => {
+  const sub = await assertDomOwnsSub(db, req.user.id, req.params.subId);
   const now = new Date();
   const tz = sub.timezone;
-  const tasks = db.prepare('SELECT * FROM tasks WHERE sub_id = ? ORDER BY active DESC, created_at DESC').all(sub.id);
-  const completions = db.prepare(
-    `SELECT c.id, c.task_id, c.period_key, c.method, c.evidence_path, c.note, c.completed_at,
+  const tasks = await db.all('SELECT * FROM tasks WHERE sub_id = ? ORDER BY active DESC, created_at DESC', sub.id);
+  const completions = await db.all(
+    `SELECT c.id, c.task_id, c.period_key, c.method, c.evidence_path, c.immich_asset_id, c.immich_media, c.note, c.completed_at,
             t.title AS task_title, t.frequency
      FROM completions c JOIN tasks t ON t.id = c.task_id
-     WHERE t.sub_id = ? ORDER BY c.completed_at DESC LIMIT 50`).all(sub.id);
-  const missed = db.prepare(
+     WHERE t.sub_id = ? ORDER BY c.completed_at DESC LIMIT 50`, sub.id);
+  const missed = await db.all(
     `SELECT a.id, a.task_id, a.period_key, a.sent_at, t.title AS task_title, t.frequency
      FROM missed_alerts a JOIN tasks t ON t.id = a.task_id
-     WHERE t.sub_id = ? ORDER BY a.sent_at DESC LIMIT 50`).all(sub.id);
-  const withStatus = tasks.map(t => {
+     WHERE t.sub_id = ? ORDER BY a.sent_at DESC LIMIT 50`, sub.id);
+  const withStatus = [];
+  for (const t of tasks) {
     const periodKey = t.due_date ? `due:${t.due_date}` : time.currentPeriodKey(now, tz, t.frequency);
-    const comp = db.prepare('SELECT * FROM completions WHERE task_id = ? AND period_key = ?').get(t.id, periodKey);
-    return { ...t, current_period: periodKey, current_done: !!comp, comment_count: commentCount.get(t.id).n };
-  });
+    const comp = await db.get('SELECT * FROM completions WHERE task_id = ? AND period_key = ?', t.id, periodKey);
+    withStatus.push({ ...t, current_period: periodKey, current_done: !!comp, comment_count: (await commentCount(t.id)).n });
+  }
   res.json({ sub, tasks: withStatus, completions, missed, labels: LABEL });
 });
 
-router.get('/dom/events', requireDom, (req, res) => {
-  const completions = db.prepare(
+router.get('/dom/events', requireDom, async (req, res) => {
+  const completions = await db.all(
     `SELECT c.id, c.completed_at, c.method, c.period_key, t.title AS task_title, t.frequency,
             s.name AS sub_name, s.id AS sub_id
      FROM completions c JOIN tasks t ON t.id = c.task_id JOIN users s ON s.id = t.sub_id
-     WHERE t.dom_id = ? ORDER BY c.completed_at DESC LIMIT 25`).all(req.user.id);
-  const missed = db.prepare(
+     WHERE t.dom_id = ? ORDER BY c.completed_at DESC LIMIT 25`, req.user.id);
+  const missed = await db.all(
     `SELECT a.id, a.sent_at, a.period_key, t.title AS task_title, t.frequency,
             s.name AS sub_name, s.id AS sub_id
      FROM missed_alerts a JOIN tasks t ON t.id = a.task_id JOIN users s ON s.id = t.sub_id
-     WHERE t.dom_id = ? ORDER BY a.sent_at DESC LIMIT 25`).all(req.user.id);
+     WHERE t.dom_id = ? ORDER BY a.sent_at DESC LIMIT 25`, req.user.id);
   res.json({ completions, missed });
 });
 

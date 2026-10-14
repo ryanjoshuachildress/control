@@ -2,3 +2,6 @@ node_modules/
 data/
 .env
 .session-secret
+control.tgz
+web/node_modules/
+web/dist/
