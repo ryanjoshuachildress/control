@@ -22,7 +22,8 @@
     "pg": "^8.13.1"
   },
   "devDependencies": {
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^12.11.1",
+    "puppeteer-core": "^25.13.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true
