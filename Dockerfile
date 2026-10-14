@@ -16,9 +16,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-# 3) One-shot migrator: needs better-sqlite3 (to read the legacy database)
+# 3) One-shot migrator: needs better-sqlite3 (to read the legacy database).
+#    NODE_ENV stays unset so npm ci also installs the better-sqlite3 devDep.
 FROM node:20-slim AS migrator
-ENV NODE_ENV=production
 ENV DATA_DIR=/data
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends python3 make g++ \
