@@ -35,7 +35,9 @@ const TABLES = [
 ];
 
 async function main() {
-  const sqlitePath = path.resolve(process.env.SQLITE_PATH || path.join(__dirname, '..', 'data', 'control.db'));
+  // legacy db sits next to the repo in dev, or on the /data volume in Docker
+  const defaultDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+  const sqlitePath = path.resolve(process.env.SQLITE_PATH || path.join(defaultDir, 'control.db'));
   let sqlite;
   try {
     sqlite = new Database(sqlitePath, { readonly: true, fileMustExist: true });
