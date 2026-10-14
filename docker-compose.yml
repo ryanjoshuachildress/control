@@ -8,6 +8,8 @@ services:
       - "0.0.0.0:3070:3000"
     environment:
       - PORT=3000
+      # PostgreSQL connection to the db service below
+      - DATABASE_URL=postgres://control:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/control
       # Generate one: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - SESSION_SECRET=${SESSION_SECRET:-please-change-me}
       # Public URL users visit (used in email links)
@@ -19,11 +21,50 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-Control <control@example.com>}
-      # Per-file upload cap; Immich integration (optional) — link library
-      # photos/videos into Moments via per-user API keys
+      # Per-file upload cap (MB); upload files still live in ./data/uploads
       - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-512}
+      # Immich integration (optional) — link library photos/videos into Moments
       - IMMICH_URL=${IMMICH_URL:-}
       - IMMICH_KEY=${IMMICH_KEY:-}
       - TZ=${TZ:-UTC}
     volumes:
+      # uploads live here; the old SQLite control.db stays as the backup copy
       - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    container_name: control-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=control
+      - POSTGRES_DB=control
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U control -d control"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+# The one-shot SQLite → PostgreSQL import runs with:
+#   docker compose run --rm migrator node scripts/migrate-sqlite-to-pg.js
+# (SQLITE_PATH defaults to /data/control.db inside the migrator image)
+  migrator:
+    build:
+      context: .
+      target: migrator
+    profiles: ["tools"]
+    environment:
+      - DATABASE_URL=postgres://control:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/control
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

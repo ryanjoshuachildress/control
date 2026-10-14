@@ -1,6 +1,9 @@
 # Control
 
 A private, self-hosted app for Dominants to guide, understand, and grow their submissives.
+
+Stack: **Express + PostgreSQL** API, **React (Vite)** SPA served by the same process.
+Sessions are cookie-based (30 days); everything is same-origin.
 Designed for one Dominant with multiple submissives — each submissive has exactly one Dominant.
 
 ## Features
@@ -42,7 +45,7 @@ Designed for one Dominant with multiple submissives — each submissive has exac
 
 ```bash
 cp .env.example .env
-# edit .env: SESSION_SECRET (random string), BASE_URL, SMTP settings
+# edit .env: POSTGRES_PASSWORD, SESSION_SECRET (random string), BASE_URL, SMTP settings
 
 docker compose up -d --build
 ```
@@ -91,7 +94,50 @@ Any SMTP server works (mail server on your homelab, or a provider). All settings
 | `SMTP_FROM` | From address, e.g. `Control <control@example.com>` |
 | `BASE_URL` | Shown in email buttons — use your public URL |
 
-## Data
+## Data & schema
+
+Data lives in PostgreSQL (`DATABASE_URL`, provided by the `db` service in
+docker-compose). The schema is versioned under `migrations/` and applied
+automatically at boot (`schema_migrations` tracks applied files). The legacy
+SQLite database (`data/control.db`) is only a backup after migration; uploads
+continue to live on disk under `data/uploads`.
+
+One-shot legacy import:
+
+```sh
+SQLITE_PATH=/data/control.db \
+DATABASE_URL=postgres://... node scripts/migrate-sqlite-to-pg.js
+# or, on the compose host:
+docker compose run --rm migrator node scripts/migrate-sqlite-to-pg.js
+```
+
+## Environment
+
+- `DATABASE_URL` — required. `postgres://user:password@host:5432/db`
+- `SESSION_SECRET` — cookie signing key
+- `BASE_URL`, `COOKIE_SECURE` — for links/cookies behind your reverse proxy
+- `SMTP_*` — mail; unset = mail logged to the container log
+- `MAX_UPLOAD_MB` — per-file upload cap (evidence, feed, moment media)
+- `IMMICH_URL`, `IMMICH_KEY` — optional Immich integration
+
+Copy `.env.example` (which includes `POSTGRES_PASSWORD`) to `.env`.
+
+## Development
+
+- Backend: `DATABASE_URL=... npm start` (port 3000; migrations run on boot)
+- Frontend: `cd web && npm run dev` (Vite dev server on :5173, proxying `/api`
+  and `/uploads` to :3000)
+- Build: `cd web && npm run build` → `web/dist`, served by express
+- Tests: `TEST_PG_URL=postgres://... node scripts/run-tests.js` (or `npm test`)
+  — spins up one throwaway database per script
+
+## Deploy
+
+1. Build on the host: `docker compose build`
+2. One-time legacy import (see above) with the old container stopped
+3. `docker compose up -d`
+
+Port stays `3070` on the host; the reverse proxy config is unchanged.
 
 Everything (SQLite database + uploaded photo/video evidence) lives in `./data/` on the host.
 Back that directory up. No outside service ever receives your data — email is the only outbound traffic.
@@ -106,10 +152,11 @@ ends without completion, the Dom is notified once for that period.
 
 ```bash
 npm install
-node src/server.js
+TEST_PG_URL=postgres://... npm test   # against any dev PostgreSQL
+DATABASE_URL=postgres://... npm start
 # http://localhost:3000
 ```
 
 ## Tech
 
-Node 20 · Express · SQLite (better-sqlite3) · cookie sessions · bcrypt · multer · nodemailer · vanilla JS frontend
+Node 20 · Express · PostgreSQL (pg) · cookie sessions · bcrypt · multer · nodemailer · React 18 + Vite frontend

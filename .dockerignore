@@ -1,6 +1,12 @@
 node_modules
+web/node_modules
+web/dist
 data
 .env
 .git
 *.md
 compose.override.yml
+control.tgz
+.session-secret
+.fixture-sqlite
+data.bak-*
