@@ -9,7 +9,6 @@ let routeRef = null;
 
 // Submissive "Today" screen: pair card, open punishments, tasks, check-in.
 export default function Today() {
-  const { user } = useUser();
   const [state, setState] = useState(null);
   const [err, setErr] = useState('');
   const [tick, setTick] = useState(0); // re-fetch after any action

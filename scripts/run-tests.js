@@ -12,7 +12,7 @@ const TESTS = [
   'test-moments.js',
   'test-profile-photo.js'
 ];
-const UI_CHECKS = ['check-feed-media-ui.js', 'check-moments-ui.js'];
+const UI_CHECKS = ['check-feed-media-ui.js', 'check-moments-ui.js', 'check-today-ui.js'];
 
 async function run(script) {
   return new Promise((resolve) => {
