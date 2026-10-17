@@ -65,10 +65,17 @@ const publicUser = async (u) => ({
   timezone: u.timezone,
   dom_id: u.dom_id,
   email_notifications: !!u.email_notifications,
+  sms_notifications: !!u.sms_notifications,
+  phone: u.phone || '',
   allow_sub_interaction: !!u.allow_sub_interaction,
   // Whether an Immich API key is on file for this user (the key itself never
   // leaves the server).
   immich_linked: !!u.immich_key,
+  // Dominant-only household switches: the SMTP master switch they manage from
+  // Settings, and whether the OpenSMS gateway is configured (URL + token are
+  // on file — neither is ever echoed back).
+  smtp_master: u.role === 'dom' ? !!u.smtp_notifications : undefined,
+  sms_linked: u.role === 'dom' ? !!u.sms_gateway_url : undefined,
   // For submissives: whether THEIR household allows cross-submissive
   // interaction (drives the "write to everyone" audience choice).
   household_interaction: u.role === 'sub' && u.dom_id
@@ -152,7 +159,8 @@ router.get('/me', requireAuth, async (req, res) => {
 });
 
 router.patch('/me', requireAuth, async (req, res) => {
-  const { name, title, timezone, email_notifications, allow_sub_interaction, immich_key } = req.body || {};
+  const { name, title, timezone, email_notifications, sms_notifications, phone,
+          allow_sub_interaction, smtp_notifications, sms_gateway_url, sms_gateway_token, immich_key } = req.body || {};
   const updates = {};
   if (name !== undefined) {
     if (!name || String(name).trim().length === 0 || String(name).length > 80) return res.status(400).json({ error: 'Name is required' });
@@ -161,9 +169,38 @@ router.patch('/me', requireAuth, async (req, res) => {
   if (title !== undefined) updates.title = String(title || '').trim().slice(0, 60);
   if (timezone !== undefined) updates.timezone = validateTimezone(String(timezone));
   if (email_notifications !== undefined) updates.email_notifications = email_notifications ? 1 : 0;
+  if (sms_notifications !== undefined) updates.sms_notifications = sms_notifications ? 1 : 0;
+  // Phone number for SMS delivery — digits with a country code (+1…), so the
+  // gateway can route it. Spaces/dashes are stripped before the check.
+  if (phone !== undefined) {
+    const num = String(phone || '').replace(/[\s().-]/g, '');
+    if (num && !/^\+\d{6,15}$/.test(num)) return res.status(400).json({ error: 'Phone must start with the country code, e.g. +16195551234' });
+    updates.phone = num.slice(0, 20);
+  }
   // Household master switch — only the Dominant can flip it.
   if (allow_sub_interaction !== undefined && req.user.role === 'dom') {
     updates.allow_sub_interaction = allow_sub_interaction ? 1 : 0;
+  }
+  if (smtp_notifications !== undefined && req.user.role === 'dom') {
+    updates.smtp_notifications = smtp_notifications ? 1 : 0;
+  }
+  // OpenSMS gateway, household-wide — URL and token are set together (both
+  // blank clears it). Like immich_key, the token is never echoed back.
+  if (sms_gateway_url !== undefined || sms_gateway_token !== undefined) {
+    if (req.user.role !== 'dom') return res.status(403).json({ error: 'Only the Dominant configures the household gateway' });
+    if (sms_gateway_url === undefined || sms_gateway_token === undefined) {
+      return res.status(400).json({ error: 'Gateway URL and token are set together' });
+    }
+    const gwUrl = String(sms_gateway_url || '').trim();
+    const gwToken = String(sms_gateway_token || '').trim();
+    if (gwUrl && !/^(https?):\/\/\S+$/.test(gwUrl)) {
+      return res.status(400).json({ error: 'Gateway URL must be a full http(s) address, e.g. http://192.168.9.130:9292/sms/' });
+    }
+    if (gwToken && !gwUrl) {
+      return res.status(400).json({ error: 'Gateway token needs the URL too' });
+    }
+    updates.sms_gateway_url = gwUrl.slice(0, 300);
+    updates.sms_gateway_token = gwToken.slice(0, 255);
   }
   // Immich API key — set to a trimmed value, or '' to clear. Validated against
   // Immich when it's reachable; never echoed back afterwards.

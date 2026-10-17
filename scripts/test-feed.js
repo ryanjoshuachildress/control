@@ -218,12 +218,17 @@ const countKind = (items, kind) => items.filter(i => i.kind === kind).length;
 
     console.log('--- feed email notifications (SMTP off → logged) ---');
     const mailTo = (em) => log.split('\n').filter(l => l.includes('[mail]') && l.includes(`to=${em}`)).length;
+    // Notifications dispatch asynchronously after the response now, so each
+    // trigger gets a short settle before its counts are read.
+    const settle = (ms = 700) => new Promise(r => setTimeout(r, ms));
     const dom2 = await j(await dom('POST', '/api/feed', { body: 'notify broadcast' }));
     ok(dom2.ok === true, 'broadcast post for notify test');
+    await settle();
     ok(mailTo('sub1@test.local') >= 1 && mailTo('sub2@test.local') >= 1,
       'both subs emailed on dom broadcast post');
     const b1 = mailTo('sub1@test.local'), b2 = mailTo('sub2@test.local');
     await j(await dom('POST', '/api/feed', { body: 'only sub1 (notify)', target_sub_ids: [sub1Id] }));
+    await settle();
     ok(mailTo('sub1@test.local') === b1 + 1, 'targeted post emails the addressed sub');
     ok(mailTo('sub2@test.local') === b2, 'targeted post does not email anyone else');
 
@@ -234,21 +239,85 @@ const countKind = (items, kind) => items.filter(i => i.kind === kind).length;
     });
     const b2b = mailTo('sub2@test.local'), b1b = mailTo('sub1@test.local');
     await j(await dom('POST', '/api/feed', { body: 'broadcast after opt-out' }));
+    await settle();
     ok(mailTo('sub2@test.local') === b2b, 'opted-out sub gets no post email');
     ok(mailTo('sub1@test.local') === b1b + 1, 'subscribed sub still gets it');
 
     // sub posts → the dom hears
     const bDom = mailTo('dom@test.local');
     await j(await sub1('POST', '/api/feed', { body: 'sir, a note for you' }));
+    await settle();
     ok(mailTo('dom@test.local') === bDom + 1, 'dom emailed on sub post');
 
     // comments on a feed post already notify the rest of the audience
     await j(await sub1('POST', `/api/comments/post/${dom2.id}`, { body: 'replying, Sir' }));
+    await settle();
     ok(mailTo('dom@test.local') === bDom + 2, 'dom emailed on sub comment (comment machinery)');
 
     const c9 = await j(await dom('POST', `/api/comments/post/${p2.id}`, { body: 'see this pet' }));
+    await settle();
     const c9n = mailTo('sub1@test.local');
     ok(c9.ok === true && c9n > 0, 'targeted sub emailed on dom comment');
+
+    // --- SMS channel + SMTP master switch
+    console.log('--- feed sms notifications (gateway off → logged) ---');
+    const smsTo = (num) => log.split('\n').filter(l => l.includes('[sms]') && l.includes(`to=${num}`)).length;
+
+    // sub1 opts into SMS; phone is normalized on save ("+" country code kept)
+    const me1 = (await (await sub1('GET', '/api/auth/me')).json()).user;
+    ok(me1.phone === '' && me1.sms_notifications === false, 'phone empty / SMS off by default');
+    const smsPatch = await j(await sub1('PATCH', '/api/auth/me', {
+      sms_notifications: true, phone: '+1 (312) 555-0001'
+    }));
+    ok(smsPatch.status === 200 && smsPatch.user.phone === '+13125550001' && smsPatch.user.sms_notifications === true,
+      'phone normalized and SMS pref saved');
+    await j(await dom('POST', '/api/feed', { body: 'broadcast → sms' }));
+    await settle();
+    ok(smsTo('+13125550001') === 1, 'opted-in sub’s text logged (gateway off path)');
+
+    // Dom configures the household gateway, pointing at this very server —
+    // POSTing there yields a 40x, proving a real, configured attempt.
+    const domUser = (await (await dom('GET', '/api/auth/me')).json()).user;
+    ok(domUser.sms_linked === false, 'gateway unconfigured initially');
+    const gwPatch = await j(await dom('PATCH', '/api/auth/me', {
+      sms_gateway_url: `${BASE}/api/auth/register`, sms_gateway_token: 'osms_test'
+    }));
+    ok(gwPatch.status === 200 && gwPatch.user.sms_linked === true, 'dom configures the gateway');
+    ok(!('sms_gateway_token' in gwPatch.user), 'gateway token never echoed back');
+    ok((await j(await sub1('GET', '/api/auth/me'))).user.sms_linked === undefined, 'subs get no gateway fields');
+    await j(await dom('POST', '/api/feed', { body: 'broadcast → real gateway' }));
+    await settle();
+    ok(log.split('\n').some(l => l.includes('[sms] gateway returned 400') && l.includes('+13125550001')),
+      'configured gateway attempted POST (server answered 400)');
+    // only the Dom can touch the gateway config
+    ok((await j(await sub1('PATCH', '/api/auth/me', { sms_gateway_url: 'http://evil', sms_gateway_token: 'x' }))).status === 403,
+      'sub cannot configure the household gateway');
+
+    // Swap to an endpoint that answers 200 — every successful send now logs
+    // a visible line ([sms] sent to <number>), failures stay visible above.
+    const sentTo = () => log.split('\n').filter(l => l.includes('[sms] sent to')).length;
+    ok(sentTo() === 0, 'no sent-line while the gateway 40x’s');
+    const gwSwap = await j(await dom('PATCH', '/api/auth/me', {
+      sms_gateway_url: `${BASE}/api/auth/forgot`, sms_gateway_token: 'osms_test'
+    }));
+    ok(gwSwap.status === 200, 'gateway config swapped to a 200 endpoint');
+    await j(await dom('POST', '/api/feed', { body: 'broadcast → gateway ok' }));
+    await settle();
+    ok(sentTo() === 1 && log.split('\n').some(l => l.includes('[sms] sent to') && l.includes('+13125550001')),
+      'successful gateway POST logged');
+
+    // household SMTP master switch: off → no email at all, texts still fire
+    await j(await dom('PATCH', '/api/auth/me', { smtp_notifications: false }));
+    const beforeMaster = mailTo('sub1@test.local');
+    const sentBefore = sentTo();
+    await j(await dom('POST', '/api/feed', { body: 'broadcast with smtp master off' }));
+    await new Promise(r => setTimeout(r, 600));
+    ok(mailTo('sub1@test.local') === beforeMaster, 'no email while the SMTP master switch is off');
+    ok(sentTo() === sentBefore + 1, 'texts unaffected by the SMTP master switch');
+    await j(await dom('PATCH', '/api/auth/me', { smtp_notifications: true }));
+    await j(await dom('POST', '/api/feed', { body: 'broadcast with smtp master back on' }));
+    await new Promise(r => setTimeout(r, 600));
+    ok(mailTo('sub1@test.local') === beforeMaster + 1, 'email resumes when the master switch is back on');
 
     console.log('--- media attachments ---');
     // 1x1 transparent PNG + a stub mp4 (only the extension matters server-side)

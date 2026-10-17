@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const time = require('./time');
 const mail = require('./mail');
+const { notifyUser } = require('./notify');
 
 function fmtPeriod(frequency, key) {
   if (frequency === 'daily') return key;
@@ -15,9 +16,9 @@ function fmtPeriod(frequency, key) {
 async function checkWeeklyPerformance() {
   const now = new Date();
   const subs = await db.all(`
-    SELECT s.id, s.name, s.timezone AS tz, s.created_at, s.email_notifications AS sub_notify,
+    SELECT s.id, s.name, s.timezone AS tz, s.created_at,
            s.weekly_punish_title, s.weekly_punish_pct,
-           d.id AS dom_id, d.email AS dom_email, d.email_notifications AS dom_notify
+           d.id AS dom_id
     FROM users s JOIN users d ON d.id = s.dom_id
     WHERE s.dom_id IS NOT NULL
       AND s.weekly_punish_title != ''
@@ -73,21 +74,20 @@ async function checkWeeklyPerformance() {
                   VALUES (?, ?, ?, ?, ?, 'checkoff', 'auto')`,
         punId, sub.dom_id, sub.id, punishTitle, desc);
 
-      if (sub.dom_notify) {
-        mail.send(sub.dom_email,
-          `${sub.name} under ${sub.weekly_punish_pct}% this week — punishment assigned`,
-          `<p><strong>${sub.name}</strong> completed only <strong>${pct}%</strong> of daily tasks in the week ending ${sundayKey}
-           (${desc.replace('Daily-task compliance was ', 'compliance: ')}). Auto-punishment assigned: <strong>${punishTitle}</strong>.</p>
-           ${mail.viewLink(`sub/${sub.id}/punishments?focus=punishment:${punId}`, 'View their punishments')}`);
-      }
-      if (sub.sub_notify) {
-        mail.send(
-          ((await db.get('SELECT email FROM users WHERE id = ?', sub.id)) || {}).email,
-          `This week's task compliance was ${pct}% — punishment assigned`,
-          `<p>Your daily-task compliance for the week ending ${sundayKey} was <strong>${pct}%</strong>, under your Dominant's required ${sub.weekly_punish_pct}%.
-           Punishment to complete within 24 hours: <strong>${punishTitle}</strong>.</p>
-           ${mail.viewLink(`today?focus=punishment:${punId}`, 'View the punishment')}`);
-      }
+      notifyUser(sub.dom_id, {
+        subject: `${sub.name} under ${sub.weekly_punish_pct}% this week — punishment assigned`,
+        html: `<p><strong>${sub.name}</strong> completed only <strong>${pct}%</strong> of daily tasks in the week ending ${sundayKey}
+               (${desc.replace('Daily-task compliance was ', 'compliance: ')}). Auto-punishment assigned: <strong>${punishTitle}</strong>.</p>
+               ${mail.viewLink(`sub/${sub.id}/punishments?focus=punishment:${punId}`, 'View their punishments')}`,
+        path: `sub/${sub.id}/punishments?focus=punishment:${punId}`
+      });
+      notifyUser(sub.id, {
+        subject: `This week's task compliance was ${pct}% — punishment assigned`,
+        html: `<p>Your daily-task compliance for the week ending ${sundayKey} was <strong>${pct}%</strong>, under your Dominant's required ${sub.weekly_punish_pct}%.
+               Punishment to complete within 24 hours: <strong>${punishTitle}</strong>.</p>
+               ${mail.viewLink(`today?focus=punishment:${punId}`, 'View the punishment')}`,
+        path: `today?focus=punishment:${punId}`
+      });
     } catch (err) {
       console.error('[scheduler] weekly performance check failed for', sub.id, err);
     }
@@ -98,8 +98,8 @@ async function checkDeadlines() {
   const now = new Date();
   const tasks = await db.all(`
     SELECT t.id, t.title, t.frequency, t.completion_mode, t.due_date, t.created_at,
-           s.id AS sub_id, s.name AS sub_name, s.title AS sub_title, s.email_notifications AS sub_notify,
-           d.email AS dom_email, d.id AS dom_id, d.email_notifications AS dom_notify,
+           s.id AS sub_id, s.name AS sub_name, s.title AS sub_title,
+           d.id AS dom_id,
            s.timezone AS sub_tz, t.auto_punish_title
     FROM tasks t
     JOIN users s ON s.id = t.sub_id
@@ -154,26 +154,22 @@ async function checkDeadlines() {
       // A one-off (due-date) task is now resolved either way — retire it.
       if (t.due_date) await db.run('UPDATE tasks SET active = 0 WHERE id = ?', t.id);
 
-      if (t.dom_notify) {
-        mail.send(
-          t.dom_email,
-          `${t.sub_name} missed "${t.title}" (${period})`,
-          `<p><strong>${t.sub_name}</strong> did not complete <strong>${t.title}</strong> before ${deadlineDesc}
-           Required completion: ${need}.
-           ${t.auto_punish_title ? `<br>An auto-punishment was assigned for it: <strong>${t.auto_punish_title}</strong>.` : ''}</p>
-           ${mail.viewLink(`sub/${t.sub_id}/tasks?focus=task:${t.id}`, 'View their tasks')}`
-        );
-      }
-      if (t.sub_notify) {
-        mail.send(
-          ((await db.get('SELECT email FROM users WHERE id = ?', t.sub_id)) || {}).email,
-          `You missed "${t.title}" (${period})`,
-          `<p>${deadlineDesc.charAt(0).toUpperCase() + deadlineDesc.slice(1)} passed without completion of <strong>${t.title}</strong>. Your Dom has been notified.
-           ${t.auto_punish_title ? `<br>Punishment to complete within 24 hours: <strong>${t.auto_punish_title}</strong>.` : ''}
-           </p>
-           ${mail.viewLink(`today?focus=task:${t.id}`, 'View the task')}`
-        );
-      }
+      notifyUser(t.dom_id, {
+        subject: `${t.sub_name} missed "${t.title}" (${period})`,
+        html: `<p><strong>${t.sub_name}</strong> did not complete <strong>${t.title}</strong> before ${deadlineDesc}
+               Required completion: ${need}.
+               ${t.auto_punish_title ? `<br>An auto-punishment was assigned for it: <strong>${t.auto_punish_title}</strong>.` : ''}</p>
+               ${mail.viewLink(`sub/${t.sub_id}/tasks?focus=task:${t.id}`, 'View their tasks')}`,
+        path: `sub/${t.sub_id}/tasks?focus=task:${t.id}`
+      });
+      notifyUser(t.sub_id, {
+        subject: `You missed "${t.title}" (${period})`,
+        html: `<p>${deadlineDesc.charAt(0).toUpperCase() + deadlineDesc.slice(1)} passed without completion of <strong>${t.title}</strong>. Your Dom has been notified.
+               ${t.auto_punish_title ? `<br>Punishment to complete within 24 hours: <strong>${t.auto_punish_title}</strong>.` : ''}
+               </p>
+               ${mail.viewLink(`today?focus=task:${t.id}`, 'View the task')}`,
+        path: `today?focus=task:${t.id}`
+      });
     } catch (err) {
       console.error('[scheduler] task check failed for', t.id, err);
     }
@@ -186,19 +182,19 @@ async function checkDeadlines() {
 // A punishment left uncompleted 24 hours after assignment notifies the Dom once.
 async function checkPunishmentLapses() {
   const stale = await db.all(`
-    SELECT p.id, p.title, p.sub_id, s.name AS sub_name, d.email AS dom_email, d.email_notifications AS dom_notify
+    SELECT p.id, p.title, p.sub_id, p.dom_id, s.name AS sub_name
     FROM punishments p
     JOIN users s ON s.id = p.sub_id
-    JOIN users d ON d.id = p.dom_id
     WHERE p.status = 'open' AND p.lapse_notified = 0
       AND p.created_at <= to_char(now() AT TIME ZONE 'UTC' - interval '24 hours', 'YYYY-MM-DD HH24:MI:SS')`);
   for (const p of stale) {
     await db.run('UPDATE punishments SET lapse_notified = 1 WHERE id = ?', p.id);
-    if (p.dom_notify) {
-      mail.send(p.dom_email, `Punishment not completed within 24h: "${p.title}"`,
-        `<p><strong>${p.sub_name}</strong>'s punishment <strong>${p.title}</strong> (assigned 24+ hours ago) is still open.</p>
-         ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`);
-    }
+    notifyUser(p.dom_id, {
+      subject: `Punishment not completed within 24h: "${p.title}"`,
+      html: `<p><strong>${p.sub_name}</strong>'s punishment <strong>${p.title}</strong> (assigned 24+ hours ago) is still open.</p>
+             ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`,
+      path: `sub/${p.sub_id}/punishments?focus=punishment:${p.id}`
+    });
   }
 }
 

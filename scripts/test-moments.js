@@ -319,16 +319,20 @@ const V = (over = {}) => Object.assign({
 
     console.log('--- moment notifications (SMTP off → logged) ---');
     const mailTo = (em) => log.split('\n').filter(l => l.includes('[mail]') && l.includes(`to=${em}`)).length;
+    // Notifications dispatch asynchronously after the response now.
+    const settle = (ms = 700) => new Promise(r => setTimeout(r, ms));
     const pre1 = mailTo('s1@test.local'), pre2 = mailTo('s2@test.local'), preD = mailTo('dom@test.local');
     await dom('POST', '/api/moments', {
       ...V(), title: 'Notify test', date: '2026-10-09', planned_kind: 'planned',
       people_dom: '1', sub_ids: [sub1Id, sub2Id]
     });
+    await settle();
     ok(mailTo('s1@test.local') === pre1 + 1, 'involved sub emailed on new shared moment');
     ok(mailTo('s2@test.local') === pre2 + 1, 'other involved sub emailed too');
     await sub3('POST', '/api/moments', {
       ...V(), title: 'Sub-made moment', date: '2026-10-09', planned_kind: 'planned', people_dom: '1'
     });
+    await settle();
     ok(mailTo('dom@test.local') === preD + 1, 'dom emailed on sub-created moment');
 
     console.log('--- feed household-wide posts (interaction switch) ---');
@@ -360,6 +364,7 @@ const V = (over = {}) => Object.assign({
     const cm1read = await j(await sub2('GET', `/api/comments/moment/${m1id}`));
     ok(cm1read.status === 200 && cm1read.comments.length === 1, 'group member reads the moment thread');
     ok((await j(await sub3('GET', `/api/comments/moment/${m1id}`))).status === 403, 'sub outside the group blocked from the moment thread');
+    await settle(700);
     ok(mailTo('dom@test.local') === cPreDom + 1, 'dom emailed on a moment comment');
 
     console.log('--- editing your version ---');

@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireAuth, assertDomOwnsSub, attachUser } = require('../lib/auth');
 
 const router = require("../lib/router")();
@@ -37,11 +38,12 @@ router.post('/', requireAuth, async (req, res) => {
   if (!dom) return res.status(404).json({ error: 'Invite code not recognized' });
 
   await db.run('UPDATE users SET dom_id = ? WHERE id = ?', dom.id, req.user.id);
-  if (dom.email_notifications) {
-    mail.send(dom.email, `${req.user.name} paired with you on Control`,
-      `<p><strong>${req.user.name}</strong>${req.user.title ? ` (${req.user.title})` : ''} has paired with you as your submissive.</p>
-       ${mail.viewLink('dash', 'View your dashboard')}`);
-  }
+  notifyUser(dom.id, {
+    subject: `${req.user.name} paired with you on Control`,
+    html: `<p><strong>${req.user.name}</strong>${req.user.title ? ` (${req.user.title})` : ''} has paired with you as your submissive.</p>
+           ${mail.viewLink('dash', 'View your dashboard')}`,
+    path: 'dash'
+  });
   res.json({ ok: true, dom: { id: dom.id, name: dom.name, title: dom.title } });
 });
 

@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib/auth');
 const { upload } = require('../lib/uploads');
 const { resolveRefs } = require('../lib/immich');
@@ -52,13 +53,13 @@ router.post('/:id/complete', requireSub, async (req, res) => {
         req.file ? req.file.filename : null, String((req.body || {}).note || '').slice(0, 500),
         immichRow ? immichRow.asset_id : null, immichRow ? immichRow.media : '', p.id);
 
-      const dom = await db.get("SELECT email, email_notifications FROM users WHERE id = ?", p.dom_id);
-      if (dom && dom.email_notifications) {
-        mail.send(dom.email, `${req.user.name} completed punishment "${p.title}"`,
-          `<p><strong>${req.user.name}</strong> completed the punishment <strong>${p.title}</strong>
-           ${method === 'evidence' ? ' with photo/video evidence — view it in their punishment history.' : ''}</p>
-           ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`);
-      }
+      notifyUser(p.dom_id, {
+        subject: `${req.user.name} completed punishment "${p.title}"`,
+        html: `<p><strong>${req.user.name}</strong> completed the punishment <strong>${p.title}</strong>
+               ${method === 'evidence' ? ' with photo/video evidence — view it in their punishment history.' : ''}</p>
+               ${mail.viewLink(`sub/${p.sub_id}/punishments?focus=punishment:${p.id}`, 'View the punishment')}`,
+        path: `sub/${p.sub_id}/punishments?focus=punishment:${p.id}`
+      });
       res.json({ ok: true });
     } catch (e) {
       console.error(e);
@@ -80,12 +81,13 @@ router.post('/', requireDom, async (req, res) => {
               VALUES (?, ?, ?, ?, ?, ?, 'manual')`,
     id, req.user.id, sub.id, String(title).trim().slice(0, 120), String(description || '').slice(0, 1000), completion_mode);
 
-  if (sub.email_notifications) {
-    mail.send(sub.email, `Punishment assigned: ${title}`,
-      `<p><strong>${req.user.name}</strong> has assigned a punishment: <strong>${String(title).trim().slice(0, 120)}</strong>.
-       Complete it within 24 hours${completion_mode === 'evidence' ? ' with photo/video evidence' : ''}.</p>
-       ${mail.viewLink(`today?focus=punishment:${id}`, 'View the punishment')}`);
-  }
+  notifyUser(sub.id, {
+    subject: `Punishment assigned: ${title}`,
+    html: `<p><strong>${req.user.name}</strong> has assigned a punishment: <strong>${String(title).trim().slice(0, 120)}</strong>.
+           Complete it within 24 hours${completion_mode === 'evidence' ? ' with photo/video evidence' : ''}.</p>
+           ${mail.viewLink(`today?focus=punishment:${id}`, 'View the punishment')}`,
+    path: `today?focus=punishment:${id}`
+  });
   res.json({ ok: true, id });
 });
 
@@ -94,12 +96,12 @@ router.delete('/:id', requireDom, async (req, res) => {
   if (!p) return res.status(404).json({ error: 'Open punishment not found' });
   await db.run("UPDATE punishments SET status = 'cancelled' WHERE id = ?", p.id);
 
-  const sub = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', p.sub_id);
-  if (sub && sub.email_notifications) {
-    mail.send(sub.email, `Punishment cancelled: ${p.title}`,
-      `<p><strong>${req.user.name}</strong> has cancelled the punishment <strong>${p.title}</strong>. Nothing is owed for it anymore.</p>
-       ${mail.viewLink('today', 'View your tasks')}`);
-  }
+  notifyUser(p.sub_id, {
+    subject: `Punishment cancelled: ${p.title}`,
+    html: `<p><strong>${req.user.name}</strong> has cancelled the punishment <strong>${p.title}</strong>. Nothing is owed for it anymore.</p>
+           ${mail.viewLink('today', 'View your tasks')}`,
+    path: 'today'
+  });
   res.json({ ok: true });
 });
 

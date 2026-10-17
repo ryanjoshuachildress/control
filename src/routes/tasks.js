@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const time = require('../lib/time');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireDom, requireSub, assertDomOwnsSub, attachUser } = require('../lib/auth');
 const { upload } = require('../lib/uploads');
 const { resolveRefs } = require('../lib/immich');
@@ -25,11 +26,12 @@ function deadlineLine(t, tz) {
     : `${esc(LABEL[t.frequency])} (midnight ${esc(tz)} time).`;
 }
 
-// Notify the sub about a task change: diffs the PATCH updates against the
-// pre-update row, and skips mail entirely when nothing actually differs.
-async function subTaskChangeMail(task, updates) {
-  const sub = await db.get('SELECT email, email_notifications, timezone FROM users WHERE id = ?', task.sub_id);
-  if (!sub || !sub.email_notifications) return;
+// Notify the sub about a task change on their enabled channels: diffs the
+// PATCH updates against the pre-update row, and skips the notification
+// entirely when nothing actually differs.
+async function subTaskChangeNotify(task, updates) {
+  const sub = await db.get('SELECT id, timezone FROM users WHERE id = ?', task.sub_id);
+  if (!sub) return;
   const tz = sub.timezone;
   const changes = [];
   if (updates.title !== undefined && updates.title !== task.title)
@@ -52,11 +54,14 @@ async function subTaskChangeMail(task, updates) {
 
   const current = { ...task, ...updates };
   const domName = (await db.get('SELECT name FROM users WHERE id = ?', task.dom_id) || {}).name || 'Your Dom';
-  mail.send(sub.email, `Task changed: ${updates.title || task.title}`,
-    `<p><strong>${esc(domName)}</strong> changed the task <strong>${esc(current.title)}</strong>:</p>
-     <ul><li>${changes.join('</li><li>')}</li></ul>
-     <p>${deadlineLine(current, tz)}${current.active ? '' : ' It is currently paused, so the deadline is on hold.'}</p>
-     ${mail.viewLink(`today?focus=task:${task.id}`, 'View the task')}`);
+  notifyUser(sub.id, {
+    subject: `Task changed: ${updates.title || task.title}`,
+    html: `<p><strong>${esc(domName)}</strong> changed the task <strong>${esc(current.title)}</strong>:</p>
+           <ul><li>${changes.join('</li><li>')}</li></ul>
+           <p>${deadlineLine(current, tz)}${current.active ? '' : ' It is currently paused, so the deadline is on hold.'}</p>
+           ${mail.viewLink(`today?focus=task:${task.id}`, 'View the task')}`,
+    path: `today?focus=task:${task.id}`
+  });
 }
 
 function normalizeDueDate(raw) {
@@ -137,12 +142,12 @@ router.post('/:id/complete', requireSub, async (req, res) => {
       // A due-date task is a one-off: completing it retires the task.
       if (task.due_date) await db.run('UPDATE tasks SET active = 0 WHERE id = ?', task.id);
 
-      const dom = await db.get("SELECT * FROM users WHERE id = ? AND role = 'dom'", task.dom_id);
-      if (dom && dom.email_notifications) {
-        mail.send(dom.email, `${req.user.name} completed "${task.title}"`,
-          `<p><strong>${req.user.name}</strong> completed <strong>${task.title}</strong> (period ${periodKey})${method === 'evidence' ? ' with photo/video evidence' : ''} — view it in their task history.</p>
-           ${mail.viewLink(`sub/${task.sub_id}/tasks?focus=task:${task.id}`, 'View the task')}`);
-      }
+      notifyUser(task.dom_id, {
+        subject: `${req.user.name} completed "${task.title}"`,
+        html: `<p><strong>${req.user.name}</strong> completed <strong>${task.title}</strong> (period ${periodKey})${method === 'evidence' ? ' with photo/video evidence' : ''} — view it in their task history.</p>
+               ${mail.viewLink(`sub/${task.sub_id}/tasks?focus=task:${task.id}`, 'View the task')}`,
+        path: `sub/${task.sub_id}/tasks?focus=task:${task.id}`
+      });
       res.json({ ok: true, task: { id: task.id, done: true, method, completed_at: new Date().toISOString() } });
     } catch (e) {
       console.error(e);
@@ -168,14 +173,15 @@ router.post('/', requireDom, async (req, res) => {
     id, req.user.id, sub.id, String(title).trim().slice(0, 120), String(description || '').slice(0, 1000), frequency, completion_mode,
     String(auto_punish_title || '').trim().slice(0, 120), due.value);
 
-  if (sub.email_notifications) {
-    mail.send(sub.email, `New task from your ${req.user.title || 'Dom'}: ${esc(title)}`,
-      `<p><strong>${esc(req.user.name)}</strong> assigned you a ${frequency} task: <strong>${esc(String(title).trim().slice(0, 120))}</strong></p>
-       <p>${due.value
-         ? `Deadline: <strong>${esc(due.value)}</strong>, end of that day (midnight ${esc(sub.timezone)} time). This overrides the frequency deadline.`
-         : LABEL[frequency]}${completion_mode === 'evidence' ? ' — photo/video evidence required.' : ' — check it off when done.'}</p>
-       ${mail.viewLink(`today?focus=task:${id}`, 'View the task')}`);
-  }
+  notifyUser(sub.id, {
+    subject: `New task from your ${req.user.title || 'Dom'}: ${esc(title)}`,
+    html: `<p><strong>${esc(req.user.name)}</strong> assigned you a ${frequency} task: <strong>${esc(String(title).trim().slice(0, 120))}</strong></p>
+           <p>${due.value
+             ? `Deadline: <strong>${esc(due.value)}</strong>, end of that day (midnight ${esc(sub.timezone)} time). This overrides the frequency deadline.`
+             : LABEL[frequency]}${completion_mode === 'evidence' ? ' — photo/video evidence required.' : ' — check it off when done.'}</p>
+           ${mail.viewLink(`today?focus=task:${id}`, 'View the task')}`,
+    path: `today?focus=task:${id}`
+  });
   res.json({ ok: true, id });
 });
 
@@ -199,7 +205,7 @@ router.patch('/:id', requireDom, async (req, res) => {
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
   const sets = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   await db.run(`UPDATE tasks SET ${sets} WHERE id = ?`, ...Object.values(updates), task.id);
-  subTaskChangeMail(task, updates);
+  subTaskChangeNotify(task, updates);
   res.json({ ok: true });
 });
 
@@ -211,14 +217,14 @@ router.delete('/:id', requireDom, async (req, res) => {
   await db.run("DELETE FROM comments WHERE subject = 'task' AND subject_id = ?", task.id);
   await db.run('DELETE FROM tasks WHERE id = ?', task.id);
 
-  const sub = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', task.sub_id);
-  if (sub && sub.email_notifications) {
-    mail.send(sub.email, `Task removed: ${task.title}`,
-      `<p><strong>${esc(req.user.name)}</strong> removed the task <strong>${esc(task.title)}</strong>
-       (was ${task.due_date ? `a one-off due ${esc(task.due_date)}` : esc(LABEL[task.frequency]).toLowerCase()}).
-       Nothing is owed for it anymore.</p>
-       ${mail.viewLink('today', 'View your tasks')}`);
-  }
+  notifyUser(task.sub_id, {
+    subject: `Task removed: ${task.title}`,
+    html: `<p><strong>${esc(req.user.name)}</strong> removed the task <strong>${esc(task.title)}</strong>
+           (was ${task.due_date ? `a one-off due ${esc(task.due_date)}` : esc(LABEL[task.frequency]).toLowerCase()}).
+           Nothing is owed for it anymore.</p>
+           ${mail.viewLink('today', 'View your tasks')}`,
+    path: 'today'
+  });
   res.json({ ok: true });
 });
 

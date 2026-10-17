@@ -21,6 +21,10 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-Control <control@example.com>}
+      # SMS gateway seed (optional) — used only until the Dom configures the
+      # gateway in Settings (that DB config always wins)
+      - OSMS_URL=${OSMS_URL:-}
+      - OSMS_TOKEN=${OSMS_TOKEN:-}
       # Per-file upload cap (MB); upload files still live in ./data/uploads
       - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-512}
       # Immich integration (optional) — link library photos/videos into Moments

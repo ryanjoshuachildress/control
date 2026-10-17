@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireAuth, attachUser, interactionOn } = require('../lib/auth');
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -148,18 +149,23 @@ router.post('/:subject/:subjectId', requireAuth, async (req, res) => {
   await db.run('INSERT INTO comments (id, subject, subject_id, author_id, body) VALUES (?, ?, ?, ?, ?)',
     id, subject, row.id, req.user.id, body.slice(0, 2000));
 
-  // Notify everyone else in the thread (never the author), honoring mail prefs.
+  // Notify everyone else in the thread (never the author) on their enabled
+  // channels — notifyUser checks each recipient's email/SMS prefs.
   const authorName = req.user.title ? `${req.user.title} ${req.user.name}` : req.user.name;
   const label = await subjectLabel(subject, row);
   for (const uid of audience) {
     if (uid === req.user.id) continue;
-    const u = await db.get('SELECT email, email_notifications, role FROM users WHERE id = ?', uid);
-    if (!u || !u.email_notifications) continue;
-    mail.send(u.email, `New comment from ${authorName}`,
-      `<p><strong>${esc(authorName)}</strong> commented on ${label}:</p>
-       <p>“${esc(body.slice(0, 300))}${body.length > 300 ? '…' : ''}”</p>
-       <p>Reply in Control to keep the conversation going.</p>
-       ${mail.viewLink(await threadPath(subject, row, u.role), 'View the conversation')}`);
+    const u = await db.get('SELECT id, role FROM users WHERE id = ?', uid);
+    if (!u) continue;
+    const path = await threadPath(subject, row, u.role);
+    notifyUser(uid, {
+      subject: `New comment from ${authorName}`,
+      html: `<p><strong>${esc(authorName)}</strong> commented on ${label}:</p>
+             <p>“${esc(body.slice(0, 300))}${body.length > 300 ? '…' : ''}”</p>
+             <p>Reply in Control to keep the conversation going.</p>
+             ${mail.viewLink(path, 'View the conversation')}`,
+      path
+    });
   }
   res.json({ ok: true, id });
 });

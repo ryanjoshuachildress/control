@@ -94,6 +94,25 @@ Any SMTP server works (mail server on your homelab, or a provider). All settings
 | `SMTP_FROM` | From address, e.g. `Control <control@example.com>` |
 | `BASE_URL` | Shown in email buttons — use your public URL |
 
+## SMS (OpenSMS gateway)
+
+Text notifications go through a self-hosted [OpenSMS](https://opensms.dev/)
+gateway (a `POST` endpoint taking `{"number", "text"}` with a bearer token).
+The Dominant configures it household-wide in **Settings → Text-message
+gateway**: the full endpoint URL (e.g. `http://192.168.9.130:9292/sms/`) and
+its bearer token. The token is stored in the database and never sent to
+browsers. Optionally seed a fresh install via env — used only until the Dom
+saves their own config:
+
+| Var | Meaning |
+|---|---|
+| `OSMS_URL` | Fallback gateway endpoint URL (empty = no gateway) |
+| `OSMS_TOKEN` | Fallback gateway bearer token |
+
+Users opt in per person in Settings ("Text me notifications" + their mobile
+number in `+` country-code form); SMS is logged to the container log instead
+of sent when no gateway is configured.
+
 ## Data & schema
 
 Data lives in PostgreSQL (`DATABASE_URL`, provided by the `db` service in
@@ -116,7 +135,10 @@ docker compose run --rm migrator node scripts/migrate-sqlite-to-pg.js
 - `DATABASE_URL` — required. `postgres://user:password@host:5432/db`
 - `SESSION_SECRET` — cookie signing key
 - `BASE_URL`, `COOKIE_SECURE` — for links/cookies behind your reverse proxy
-- `SMTP_*` — mail; unset = mail logged to the container log
+- `SMTP_*` — mail; unset = mail logged to the container log (a Dom can also
+  switch email off household-wide in Settings)
+- `OSMS_URL`, `OSMS_TOKEN` — optional SMS-gateway seed; the Dom's in-app
+  gateway config takes precedence
 - `MAX_UPLOAD_MB` — per-file upload cap (evidence, feed, moment media)
 - `IMMICH_URL`, `IMMICH_KEY` — optional Immich integration
 

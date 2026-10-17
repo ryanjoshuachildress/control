@@ -6,6 +6,7 @@ const multer = require('multer');
 const db = require('../db');
 const { UPLOAD_DIR } = require('../db');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireAuth, attachUser, requireDom, assertDomOwnsSub, interactionOn } = require('../lib/auth');
 const { momentUpload, mediaKind, MULTER_MAX_FILES, MAX_UPLOAD_MB } = require('../lib/uploads');
 const { configured: immichConfigured, BASE: immichBase, resolveRefs } = require('../lib/immich');
@@ -411,25 +412,26 @@ router.post('/', requireAuth, momentUpload.array('media', MULTER_MAX_FILES), asy
     }
   });
 
-  // Email: involved submissives hear a Dom-created moment exists (and must
-  // record their version to read it); the Dom hears a sub-created one.
+  // Notifications: involved submissives hear a Dom-created moment exists (and
+  // must record their version to read it); the Dom hears a sub-created one.
   const by = me.title ? `${me.title} ${me.name}` : me.name;
   if (me.role === 'dom') {
     for (const sid of subsIn) {
-      const u = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', sid);
-      if (!u || !u.email_notifications) continue;
-      mail.send(u.email, `New moment recorded: ${title}`,
-        `<p><strong>${mail.esc(by)}</strong> recorded a moment — <strong>${mail.esc(title)}</strong> on ${mail.esc(mdate)}.</p>
-         <p>Record your own version of it to unlock reading theirs.</p>
-         ${mail.viewLink(`moments?focus=moment:${id}`, 'Open the moments')}`);
+      notifyUser(sid, {
+        subject: `New moment recorded: ${title}`,
+        html: `<p><strong>${mail.esc(by)}</strong> recorded a moment — <strong>${mail.esc(title)}</strong> on ${mail.esc(mdate)}.</p>
+               <p>Record your own version of it to unlock reading theirs.</p>
+               ${mail.viewLink(`moments?focus=moment:${id}`, 'Open the moments')}`,
+        path: `moments?focus=moment:${id}`
+      });
     }
   } else {
-    const d = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', domId);
-    if (d && d.email_notifications) {
-      mail.send(d.email, `New moment recorded: ${title}`,
-        `<p><strong>${mail.esc(by)}</strong> recorded a moment — <strong>${mail.esc(title)}</strong> on ${mail.esc(mdate)}.</p>
-         ${mail.viewLink(`moments?focus=moment:${id}`, 'Open the moments')}`);
-    }
+    notifyUser(domId, {
+      subject: `New moment recorded: ${title}`,
+      html: `<p><strong>${mail.esc(by)}</strong> recorded a moment — <strong>${mail.esc(title)}</strong> on ${mail.esc(mdate)}.</p>
+             ${mail.viewLink(`moments?focus=moment:${id}`, 'Open the moments')}`,
+      path: `moments?focus=moment:${id}`
+    });
   }
 
   res.json({ ok: true, id });
@@ -467,20 +469,20 @@ router.post('/:id/version', requireAuth, momentUpload.array('media', MULTER_MAX_
   // submissive(s) in the group their read is unlocked.
   const by = me.title ? `${me.title} ${me.name}` : me.name;
   if (me.role === 'sub') {
-    const d = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', g.dom_id);
-    if (d && d.email_notifications) {
-      mail.send(d.email, `A version was recorded: ${g.title}`,
-        `<p><strong>${mail.esc(by)}</strong> recorded their version of <strong>${mail.esc(g.title)}</strong>.</p>
-         ${mail.viewLink(`moments?focus=moment:${g.id}`, 'Open the moments')}`);
-    }
+    notifyUser(g.dom_id, {
+      subject: `A version was recorded: ${g.title}`,
+      html: `<p><strong>${mail.esc(by)}</strong> recorded their version of <strong>${mail.esc(g.title)}</strong>.</p>
+             ${mail.viewLink(`moments?focus=moment:${g.id}`, 'Open the moments')}`,
+      path: `moments?focus=moment:${g.id}`
+    });
   } else {
-    for (const u of await db.all(
-      `SELECT u.id, u.email, u.email_notifications FROM moment_group_subs gs
-       JOIN users u ON u.id = gs.sub_id WHERE gs.group_id = ?`, g.id)) {
-      if (!u.email_notifications) continue;
-      mail.send(u.email, `Your Dom added their version of “${g.title}”`,
-        `<p>Their account of it is unlocked for you now — yours is too.</p>
-         ${mail.viewLink(`moments?focus=moment:${g.id}`, 'Open the moments')}`);
+    for (const u of await db.all('SELECT sub_id FROM moment_group_subs WHERE group_id = ?', g.id)) {
+      notifyUser(u.sub_id, {
+        subject: `Your Dom added their version of “${g.title}”`,
+        html: `<p>Their account of it is unlocked for you now — yours is too.</p>
+               ${mail.viewLink(`moments?focus=moment:${g.id}`, 'Open the moments')}`,
+        path: `moments?focus=moment:${g.id}`
+      });
     }
   }
 

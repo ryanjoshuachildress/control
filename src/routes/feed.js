@@ -6,6 +6,7 @@ const multer = require('multer');
 const db = require('../db');
 const { UPLOAD_DIR } = require('../db');
 const mail = require('../lib/mail');
+const { notifyUser } = require('../lib/notify');
 const { requireAuth, assertDomOwnsSub, attachUser, interactionOn } = require('../lib/auth');
 const { feedUpload, mediaKind, MULTER_MAX_FILES, MAX_UPLOAD_MB } = require('../lib/uploads');
 const { resolveRefs } = require('../lib/immich');
@@ -220,35 +221,23 @@ router.post('/', requireAuth, feedUpload.array('media', MULTER_MAX_FILES), async
     }
   });
 
-  // Email notifications on the post itself (comments are notified by
-  // comments.js): the submissive hears about the Dom's post addressed to them;
-  // the Dom hears about a sub's post. Author never notified; the
-  // email_notifications opt-out is respected. Fire-and-forget like comments.
+  // Notifications on the post itself (comments are notified by comments.js):
+  // the submissive hears about the Dom's post addressed to them; the Dom hears
+  // about a sub's post. Author never notified. notifyUser checks each
+  // recipient's email/SMS prefs and the household SMTP switch.
   const authorName = req.user.title ? `${req.user.title} ${req.user.name}` : req.user.name;
   const excerpt = text
     ? `<p>“${mail.esc(text.slice(0, 300))}${text.length > 300 ? '…' : ''}”</p>` : '';
   const attNote = files.length
     ? `<p>With ${files.length} attachment${files.length === 1 ? '' : 's'}.</p>` : '';
-  const subLine = (who) => mail.send(who,
-    `New household post from ${authorName}`,
-    `${excerpt || '<p>(photo/video post)</p>'}${attNote}
-     <p>Open Control to see it in the feed.</p>
-     ${mail.viewLink(`feed?focus=post:${id}`, 'View the post')}`);
-  const domLine = (who) => mail.send(who,
-    `New feed post from ${authorName}`,
-    `${excerpt || '<p>(photo/video post)</p>'}${attNote}
-     <p>Open Control to see it in the feed.</p>
-     ${mail.viewLink(`feed?focus=post:${id}`, 'View the post')}`);
+  const postHtml = (excerpt || '<p>(photo/video post)</p>').concat(`\n     <p>Open Control to see it in the feed.</p>\n     ${mail.viewLink(`feed?focus=post:${id}`, 'View the post')}`);
 
   if (req.user.role === 'dom' && domId) {
     for (const t of await db.all('SELECT sub_id FROM feed_post_targets WHERE post_id = ?', id)) {
-      const u = await db.get('SELECT email, email_notifications FROM users WHERE id = ?', t.sub_id);
-      if (!u || !u.email_notifications) continue;
-      subLine(u.email);
+      notifyUser(t.sub_id, { subject: `New household post from ${authorName}`, html: postHtml, path: `feed?focus=post:${id}` });
     }
   } else if (req.user.role === 'sub' && req.user.dom_id) {
-    const u = await db.get('SELECT email FROM users WHERE id = ?', req.user.dom_id);
-    if (u) domLine(u.email);
+    notifyUser(req.user.dom_id, { subject: `New feed post from ${authorName}`, html: postHtml, path: `feed?focus=post:${id}` });
   }
 
   res.json({ ok: true, id });

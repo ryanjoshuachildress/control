@@ -33,10 +33,16 @@ export default function Settings() {
           const body = {
             name: f.name.value, title: titleVal, timezone: f.timezone.value,
             email_notifications: f.email_notifications.checked,
-            allow_sub_interaction: user.role === 'dom' ? f.allow_sub_interaction.checked : undefined
+            sms_notifications: f.sms_notifications.checked,
+            phone: f.phone.value,
+            allow_sub_interaction: user.role === 'dom' ? f.allow_sub_interaction.checked : undefined,
+            smtp_notifications: user.role === 'dom' ? f.smtp_notifications.checked : undefined
           };
           const keyVal = f.immich_key ? String(f.immich_key.value || '').trim() : '';
           if (keyVal) body.immich_key = keyVal; // only sent when the user pasted one
+          const gwUrl = f.sms_gateway_url ? String(f.sms_gateway_url.value || '').trim() : '';
+          const gwToken = f.sms_gateway_token ? String(f.sms_gateway_token.value || '').trim() : '';
+          if (gwUrl || gwToken) { body.sms_gateway_url = gwUrl; body.sms_gateway_token = gwToken; }
           api('/auth/me', { method: 'PATCH', body })
             .then((d) => {
               setUser(d.user);
@@ -60,6 +66,12 @@ export default function Settings() {
             <input type="checkbox" name="email_notifications" defaultChecked={user.email_notifications} style={{ width: 'auto', marginRight: 8 }} />
             <span style={{ margin: 0 }}>Email me notifications</span>
           </label>
+          <label className="f"><span>Mobile number <span className="tiny">(for text alerts, e.g. +16195551234)</span></span>
+            <input type="tel" name="phone" maxLength={20} defaultValue={user.phone} placeholder="+" /></label>
+          <label className="f row">
+            <input type="checkbox" name="sms_notifications" defaultChecked={user.sms_notifications} style={{ width: 'auto', marginRight: 8 }} />
+            <span style={{ margin: 0 }}>Text me notifications</span>
+          </label>
           {user.role === 'dom' && (
             <>
               <label className="f row">
@@ -67,6 +79,11 @@ export default function Settings() {
                 <span style={{ margin: 0 }}>Let my submissives see each other <span className="tiny">(household-wide)</span></span>
               </label>
               <p className="hint" style={{ marginTop: -8 }}>Off — the default — every submissive is sandboxed: they never see each other's feed posts, journals, or Moment versions, and each must record their version of a shared Moment to read yours. On — submissives who share a Moment or a household-wide post can read each other's versions and posts and join the threads. You always see everything either way.</p>
+              <label className="f row">
+                <input type="checkbox" name="smtp_notifications" defaultChecked={user.smtp_master} style={{ width: 'auto', marginRight: 8 }} />
+                <span style={{ margin: 0 }}>SMTP — email on for the household <span className="tiny">(master switch)</span></span>
+              </label>
+              <p className="hint" style={{ marginTop: -8 }}>Off — nobody in the household gets email from Control, regardless of personal preferences. On — the default — each person's own "Email me notifications" choice applies. Password-reset emails are sent either way while the server has SMTP configured.</p>
             </>
           )}
           <label className="f"><span>Immich API key {user.immich_linked ? <span className="tiny">(one is on file — paste a new one to replace it)</span> : ''}</span>
@@ -80,6 +97,24 @@ export default function Settings() {
                   .catch(e => toast(e.message, true));
               }}>Remove Immich key</button>
             : <p className="hint" style={{ marginTop: -8 }}>Lets you link photos and videos straight from your Immich library into Moments — no re-uploads.</p>}
+          {user.role === 'dom' && (
+            <>
+              <h2 style={{ fontSize: 16, margin: '8px 0 12px' }}>Text-message gateway</h2>
+              <label className="f"><span>Gateway URL {user.sms_linked ? <span className="tiny">(configured — enter a new one to replace it)</span> : ''}</span>
+                <input type="text" name="sms_gateway_url" placeholder="http://192.168.9.130:9292/sms/" /></label>
+              <label className="f"><span>Bearer token</span>
+                <input type="password" name="sms_gateway_token" autoComplete="off"
+                  placeholder={user.sms_linked ? '•••••••• (paste a new token to replace)' : 'paste the gateway bearer token'} /></label>
+              {user.sms_linked
+                ? <button className="small ghost" type="button" style={{ margin: '-6px 0 14px' }} onClick={() => {
+                    if (!confirm('Remove the household SMS gateway config? Nobody gets texts until it is set up again.')) return;
+                    api('/auth/me', { method: 'PATCH', body: { sms_gateway_url: '', sms_gateway_token: '' } })
+                      .then(d => { setUser(d.user); toast('Gateway removed'); reload(); })
+                      .catch(e => toast(e.message, true));
+                  }}>Remove gateway</button>
+                : <p className="hint" style={{ marginTop: -8 }}>A self-hosted SMS gateway (OpenSMS): paste the full POST endpoint URL and its bearer token. Texts go out to anyone who turned "Text me notifications" on and saved a mobile number. Household-wide — applies to all paired submissives.</p>}
+            </>
+          )}
           <button className="primary" type="submit">Save</button>
         </form>
       </div>
